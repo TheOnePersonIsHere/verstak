@@ -1,0 +1,97 @@
+{
+  "name": "SampleProject",
+  "virtualWidth": 1280,
+  "virtualHeight": 720,
+  "nodes": [
+    {
+      "nodeId": "moving_sprite_demo",
+      "scriptPath": "scripts/MovingSpriteNode.cs",
+      "enabled": true,
+      "properties": {
+        "sprite.path": "assets/sprites/image_court.png"
+      }
+    }
+  ],
+  "timeline": {
+    "maxDuration": 4.0,
+    "loop": true,
+    "propertyTracks": [
+      {
+        "id": "track_x",
+        "displayName": "Position X",
+        "targetProperty": "sprite.x",
+        "keyframes": [
+          { "time": 0.0, "value": 640.0, "easing": "SmoothStep" },
+          { "time": 2.0, "value": 680.0, "easing": "SmoothStep" },
+          { "time": 4.0, "value": 640.0, "easing": "Linear" }
+        ]
+      },
+      {
+        "id": "track_y",
+        "displayName": "Position Y",
+        "targetProperty": "sprite.y",
+        "keyframes": [
+          { "time": 0.0, "value": 360.0, "easing": "SmoothStep" },
+          { "time": 1.0, "value": 345.0, "easing": "SmoothStep" },
+          { "time": 2.0, "value": 360.0, "easing": "SmoothStep" },
+          { "time": 3.0, "value": 375.0, "easing": "SmoothStep" },
+          { "time": 4.0, "value": 360.0, "easing": "Linear" }
+        ]
+      },
+      {
+        "id": "track_rot",
+        "displayName": "Rotation",
+        "targetProperty": "sprite.rotation",
+        "keyframes": [
+          { "time": 0.0, "value": 0.0, "easing": "SmoothStep" },
+          { "time": 2.0, "value": 1.5, "easing": "SmoothStep" },
+          { "time": 4.0, "value": 0.0, "easing": "Linear" }
+        ]
+      },
+      {
+        "id": "track_scale",
+        "displayName": "Scale",
+        "targetProperty": "sprite.scale",
+        "keyframes": [
+          { "time": 0.0, "value": 0.72, "easing": "SmoothStep" },
+          { "time": 2.0, "value": 0.76, "easing": "SmoothStep" },
+          { "time": 4.0, "value": 0.72, "easing": "Linear" }
+        ]
+      }
+    ],
+    "triggerTracks": [
+      {
+        "id": "track_audio_triggers",
+        "displayName": "Audio Trigger",
+        "triggers": [
+          {
+            "time": 1.0,
+            "actionType": "sound",
+            "target": "assets/audio/test_beep.wav",
+            "volume": 0.75,
+            "pitch": 1.0
+          },
+          {
+            "time": 3.0,
+            "actionType": "sound",
+            "target": "assets/audio/test_beep.wav",
+            "volume": 0.75,
+            "pitch": 1.25
+          }
+        ]
+      },
+      {
+        "id": "track_node_triggers",
+        "displayName": "Node Trigger",
+        "triggers": [
+          {
+            "time": 2.0,
+            "actionType": "method",
+            "target": "moving_sprite_demo.OnBeat",
+            "argument": "midpoint"
+          }
+        ]
+      }
+    ]
+  }
+}

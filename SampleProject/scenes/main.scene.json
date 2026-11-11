@@ -1,0 +1,36 @@
+﻿{
+  "name": "main",
+  "items": [
+    {
+      "id": "layer_primary",
+      "name": "Primary Sprite",
+      "parentId": null,
+      "kind": "Sprite",
+      "assetPath": "assets/sprites/image_court.png",
+      "surfaceKey": "",
+      "shaderPath": "",
+      "shaderIntensity": 1,
+      "x": 640,
+      "y": 360,
+      "rotation": 0,
+      "scaleX": 0.25413132,
+      "scaleY": 0.25413132,
+      "originX": 0.5,
+      "originY": 0.5,
+      "width": 0,
+      "height": 0,
+      "colorR": 255,
+      "colorG": 255,
+      "colorB": 255,
+      "colorA": 255,
+      "zOrder": 0,
+      "visible": true,
+      "locked": false,
+      "text": "",
+      "fontSize": 24,
+      "tags": {
+        "bindPrefix": "sprite"
+      }
+    }
+  ]
+}

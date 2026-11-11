@@ -1,0 +1,154 @@
+{
+  "name": "HandshakeShowcase",
+  "virtualWidth": 1280,
+  "virtualHeight": 720,
+  "nodes": [
+    {
+      "nodeId": "handshake_scene",
+      "scriptPath": "scripts/HandshakeSceneNode.cs",
+      "enabled": true,
+      "properties": {
+        "logo.path": "assets/sprites/logo.png"
+      }
+    }
+  ],
+  "timeline": {
+    "maxDuration": 6.0,
+    "loop": true,
+    "propertyTracks": [
+      {
+        "id": "track_guy_left_x",
+        "displayName": "Guy Left X",
+        "targetProperty": "guyLeft.x",
+        "keyframes": [
+          { "time": 0.0, "value": 220.0, "easing": "SmoothStep" },
+          { "time": 0.2, "value": 220.0, "easing": "SmoothStep" },
+          { "time": 1.65, "value": 576.0, "easing": "SmoothStep" },
+          { "time": 2.7, "value": 576.0, "easing": "SmoothStep" },
+          { "time": 4.45, "value": -80.0, "easing": "SmoothStep" },
+          { "time": 6.0, "value": -80.0, "easing": "Linear" }
+        ]
+      },
+      {
+        "id": "track_guy_right_x",
+        "displayName": "Guy Right X",
+        "targetProperty": "guyRight.x",
+        "keyframes": [
+          { "time": 0.0, "value": 1060.0, "easing": "SmoothStep" },
+          { "time": 0.2, "value": 1060.0, "easing": "SmoothStep" },
+          { "time": 1.65, "value": 704.0, "easing": "SmoothStep" },
+          { "time": 2.7, "value": 704.0, "easing": "SmoothStep" },
+          { "time": 4.45, "value": 1360.0, "easing": "SmoothStep" },
+          { "time": 6.0, "value": 1360.0, "easing": "Linear" }
+        ]
+      },
+      {
+        "id": "track_handshake_blend",
+        "displayName": "Handshake Clasp",
+        "targetProperty": "handshake.blend",
+        "keyframes": [
+          { "time": 0.0, "value": 0.0, "easing": "Step" },
+          { "time": 1.42, "value": 0.0, "easing": "SmoothStep" },
+          { "time": 1.78, "value": 1.0, "easing": "SmoothStep" },
+          { "time": 2.48, "value": 1.0, "easing": "SmoothStep" },
+          { "time": 2.74, "value": 0.0, "easing": "SmoothStep" },
+          { "time": 6.0, "value": 0.0, "easing": "Linear" }
+        ]
+      },
+      {
+        "id": "track_logo_alpha",
+        "displayName": "Logo Alpha",
+        "targetProperty": "logo.alpha",
+        "keyframes": [
+          { "time": 0.0, "value": 0.0, "easing": "Step" },
+          { "time": 2.62, "value": 0.0, "easing": "SmoothStep" },
+          { "time": 2.96, "value": 1.0, "easing": "SmoothStep" },
+          { "time": 5.55, "value": 1.0, "easing": "SmoothStep" },
+          { "time": 5.95, "value": 0.0, "easing": "SmoothStep" },
+          { "time": 6.0, "value": 0.0, "easing": "Linear" }
+        ]
+      },
+      {
+        "id": "track_logo_scale",
+        "displayName": "Logo Scale",
+        "targetProperty": "logo.scale",
+        "keyframes": [
+          { "time": 0.0, "value": 0.0, "easing": "Step" },
+          { "time": 2.62, "value": 0.15, "easing": "SmoothStep" },
+          { "time": 3.02, "value": 1.16, "easing": "SmoothStep" },
+          { "time": 3.22, "value": 0.95, "easing": "SmoothStep" },
+          { "time": 3.42, "value": 1.0, "easing": "SmoothStep" },
+          { "time": 4.5, "value": 1.03, "easing": "SmoothStep" },
+          { "time": 5.55, "value": 1.0, "easing": "SmoothStep" },
+          { "time": 5.95, "value": 0.82, "easing": "SmoothStep" },
+          { "time": 6.0, "value": 0.0, "easing": "Linear" }
+        ]
+      },
+      {
+        "id": "track_logo_y",
+        "displayName": "Logo Center Y",
+        "targetProperty": "logo.y",
+        "keyframes": [
+          { "time": 0.0, "value": 388.0, "easing": "Step" },
+          { "time": 2.62, "value": 388.0, "easing": "SmoothStep" },
+          { "time": 3.18, "value": 342.0, "easing": "SmoothStep" },
+          { "time": 5.55, "value": 342.0, "easing": "SmoothStep" },
+          { "time": 5.95, "value": 354.0, "easing": "Linear" },
+          { "time": 6.0, "value": 354.0, "easing": "Linear" }
+        ]
+      },
+      {
+        "id": "track_logo_rotation",
+        "displayName": "Logo Tilt",
+        "targetProperty": "logo.rotation",
+        "keyframes": [
+          { "time": 0.0, "value": -14.0, "easing": "Step" },
+          { "time": 2.62, "value": -14.0, "easing": "SmoothStep" },
+          { "time": 3.02, "value": 3.5, "easing": "SmoothStep" },
+          { "time": 3.3, "value": 0.0, "easing": "SmoothStep" },
+          { "time": 6.0, "value": 0.0, "easing": "Linear" }
+        ]
+      }
+    ],
+    "triggerTracks": [
+      {
+        "id": "track_stage_events",
+        "displayName": "Stage Events",
+        "triggers": [
+          {
+            "time": 1.78,
+            "actionType": "method",
+            "target": "handshake_scene.OnHandshakeContact",
+            "argument": "clasp"
+          },
+          {
+            "time": 2.65,
+            "actionType": "method",
+            "target": "handshake_scene.OnLogoReveal",
+            "argument": "reveal"
+          }
+        ]
+      },
+      {
+        "id": "track_audio_fx",
+        "displayName": "Audio Chime",
+        "triggers": [
+          {
+            "time": 1.78,
+            "actionType": "sound",
+            "target": "assets/audio/handshake_chime.wav",
+            "volume": 0.65,
+            "pitch": 0.95
+          },
+          {
+            "time": 2.65,
+            "actionType": "sound",
+            "target": "assets/audio/handshake_chime.wav",
+            "volume": 0.8,
+            "pitch": 1.25
+          }
+        ]
+      }
+    ]
+  }
+}
