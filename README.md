@@ -443,3 +443,9 @@ pluginHost.RegisterPlugin(new TelemetryLogPlugin(), canDisable: true, defaultWin
 ```
 
 Your plugin immediately appears in **Settings -> Plugins**, respects `Enable/Disable` lifecycle hooks (`OnLoaded` / `OnUnloaded`), persists its state across launches, and integrates cleanly into the macOS menu bar and ImGui docking layout.
+
+---
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

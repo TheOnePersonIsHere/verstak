@@ -441,3 +441,9 @@ pluginHost.RegisterPlugin(new TelemetryLogPlugin(), canDisable: true, defaultWin
 ```
 
 После сборки плагин автоматически появится в `Settings -> Plugins`, будет корректно выгружаться/загружаться (`OnLoaded`/`OnUnloaded`), сохранять состояние видимости между запусками и отображаться в системном меню macOS.
+
+---
+
+## Лицензия
+
+Проект распространяется под лицензией [MIT License](LICENSE).
