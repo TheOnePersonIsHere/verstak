@@ -83,10 +83,12 @@ WorkbenchEngine/
     │   ├── Execution/              # ExecutionPlugin (Roslyn compiler + runtime host)
     │   └── Settings/               # WorkbenchSettingsPlugin & WorkbenchTheme (Studio Graphite / Cobalt)
     └── Engine.App/                 # Desktop host entry point
-        ├── Program.cs              # Window init, docking layout, splash state machine, render/UI loop
+        ├── Assets/VerstakAppIcon.png  # Embedded 512x512 macOS squircle Dock & window icon
+        ├── AppDockIconBridge.cs       # Cocoa NSApplication Dock icon & Raylib window icon loader
+        ├── Program.cs                 # Window init, docking layout, splash state machine, render/UI loop
         ├── StartupSplashController.cs # Async warmup & procedural Verstak logo reveal
-        ├── MacOsMenuBridge.cs      # Native macOS NSMenu bar synchronization
-        └── ImGuiInputBridge.cs     # Frame input bridge preventing stuck modifiers/mouse
+        ├── MacOsMenuBridge.cs         # Native macOS NSMenu bar synchronization
+        └── ImGuiInputBridge.cs        # Frame input bridge preventing stuck modifiers/mouse
 ```
 
 ---

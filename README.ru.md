@@ -83,10 +83,12 @@ WorkbenchEngine/
     │   ├── Execution/              # ExecutionPlugin (Roslyn-компилятор и хост узлов)
     │   └── Settings/               # WorkbenchSettingsPlugin и WorkbenchTheme (Studio Graphite / Cobalt)
     └── Engine.App/                 # Точка входа
-        ├── Program.cs              # Инициализация окна, докинг-лейаут, сплеш-машина и цикл
+        ├── Assets/VerstakAppIcon.png  # Встроенная иконка 512x512 для macOS Dock и окна приложения
+        ├── AppDockIconBridge.cs       # Привязка иконки к NSApplication Dock и Raylib-окну
+        ├── Program.cs                 # Инициализация окна, докинг-лейаут, сплеш-машина и цикл
         ├── StartupSplashController.cs # Фоновый прогрев и процедурная анимация логотипа Verstak
-        ├── MacOsMenuBridge.cs      # Нативное верхнее меню macOS NSMenu
-        └── ImGuiInputBridge.cs     # Мост ввода с защитой от залипания клавиш
+        ├── MacOsMenuBridge.cs         # Нативное верхнее меню macOS NSMenu
+        └── ImGuiInputBridge.cs        # Мост ввода с защитой от залипания клавиш
 ```
 
 ---

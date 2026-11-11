@@ -37,6 +37,7 @@ public static class Program
         Raylib.InitWindow(1400, 860, "Workbench // Minimal 2D");
         Raylib.SetWindowMinSize(960, 600);
         Raylib.SetExitKey(KeyboardKey.Null);
+        AppDockIconBridge.ApplyDefaultIcon();
         Raylib.InitAudioDevice();
 
         rlImGui.Setup(darkTheme: true, enableDocking: true);
