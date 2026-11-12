@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Numerics;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Engine.Core.Abstractions;
 using Engine.Core.Events;
@@ -7,7 +9,6 @@ using Engine.Core.Plugins;
 using Engine.Plugins.Timeline;
 using Engine.Plugins.Workspace;
 using ImGuiNET;
-using Raylib_cs;
 using ExecutionContext = Engine.Core.Abstractions.ExecutionContext;
 
 namespace Engine.Plugins.Execution;
@@ -24,6 +25,7 @@ public sealed class ExecutionPlugin : IEnginePlugin
     private PluginContext? _context;
     private ExecutionContext? _executionContext;
     private ScriptAssemblyLoadContext? _scriptLoadContext;
+    private ScriptAssemblyScope? _scriptScope;
     private readonly List<IExecutableNode> _activeNodes = new();
     private readonly List<string> _compileErrors = new();
     private readonly List<string> _recentEvents = new();
@@ -34,6 +36,10 @@ public sealed class ExecutionPlugin : IEnginePlugin
     public string DisplayName => "Execution";
 
     public IReadOnlyList<IExecutableNode> ActiveNodes => _activeNodes;
+    public IReadOnlyList<string> CompileErrors => _compileErrors;
+    public double LastReloadElapsedMs { get; private set; }
+    internal ScriptAssemblyScope? CurrentScope => _scriptScope;
+    internal ScriptAssemblyLoadContext? CurrentLoadContext => _scriptLoadContext;
 
     public void OnLoaded(PluginContext context)
     {
@@ -43,7 +49,7 @@ public sealed class ExecutionPlugin : IEnginePlugin
         context.Menu.Register(new MenuItemDefinition(
             Id: "execution.reload",
             Path: "File/Reload Scripts",
-            Callback: ReloadProjectNodes,
+            Callback: () => ReloadProjectNodes(applyProjectConfig: false),
             Shortcut: "Cmd+R",
             Order: 70));
 
@@ -57,7 +63,7 @@ public sealed class ExecutionPlugin : IEnginePlugin
         context.EventBus.Subscribe<TimelineTriggerFiredEvent>(OnTimelineTriggerFired);
         context.EventBus.Subscribe<ViewportRenderPassEvent>(OnViewportRenderPass);
 
-        ReloadProjectNodes();
+        ReloadProjectNodes(applyProjectConfig: true);
         _lastProjectRootLoaded = Path.GetFullPath(context.Workspace.ProjectRoot);
     }
 
@@ -68,8 +74,9 @@ public sealed class ExecutionPlugin : IEnginePlugin
             return;
         }
 
-        foreach (IExecutableNode node in _activeNodes)
+        for (int i = 0; i < _activeNodes.Count; i++)
         {
+            IExecutableNode node = _activeNodes[i];
             try
             {
                 node.OnUpdate(deltaTime);
@@ -113,14 +120,14 @@ public sealed class ExecutionPlugin : IEnginePlugin
 
         if (ImGui.Button("Reload Scripts", new Vector2(ImGui.GetContentRegionAvail().X, 0f)))
         {
-            ReloadProjectNodes();
+            ReloadProjectNodes(applyProjectConfig: true);
         }
 
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
 
-        ImGui.TextDisabled($"ACTIVE NODES ({_activeNodes.Count})");
+        ImGui.TextDisabled($"ACTIVE NODES ({_activeNodes.Count})  |  Hot-Reload: {LastReloadElapsedMs:F1} ms");
         foreach (IExecutableNode node in _activeNodes)
         {
             ImGui.BulletText($"{node.NodeId} ({node.GetType().Name})");
@@ -193,6 +200,59 @@ public sealed class ExecutionPlugin : IEnginePlugin
         UnloadActiveNodes();
     }
 
+    public bool ReloadProjectNodes() => ReloadProjectNodes(applyProjectConfig: false);
+
+    public bool ReloadProjectNodes(bool applyProjectConfig)
+    {
+        if (_context == null || _executionContext == null)
+        {
+            return false;
+        }
+
+        var sw = Stopwatch.StartNew();
+        _runtimeError = null;
+
+        string[] scriptPaths = ResolveNodeScriptPaths(
+            applyProjectConfig,
+            out Dictionary<string, string> configuredStringProps,
+            out HashSet<string> disabledNodeIds,
+            out Dictionary<string, int> configuredOrder);
+
+        foreach (KeyValuePair<string, string> kvp in configuredStringProps)
+        {
+            _executionContext.SetStringProperty(kvp.Key, kvp.Value);
+        }
+
+        ScriptEmitResult emitResult = ScriptCompiler.EmitNodesFromFiles(scriptPaths);
+
+        _compileErrors.Clear();
+        if (!emitResult.Success)
+        {
+            _compileErrors.AddRange(emitResult.Errors);
+            sw.Stop();
+            LastReloadElapsedMs = sw.Elapsed.TotalMilliseconds;
+            AddLog($"Compile error ({emitResult.Errors.Count})");
+            return false;
+        }
+
+        // Strict Module E teardown: dispose previous scope (events, FBO surfaces, OnUnload) BEFORE ALC.Unload().
+        UnloadActiveNodes();
+
+        if (!LoadAndActivateNodes(emitResult.PeBytes, disabledNodeIds, configuredOrder, out IReadOnlyList<string> loadErrors))
+        {
+            _compileErrors.AddRange(loadErrors);
+            sw.Stop();
+            LastReloadElapsedMs = sw.Elapsed.TotalMilliseconds;
+            AddLog($"Load error ({loadErrors.Count})");
+            return false;
+        }
+
+        sw.Stop();
+        LastReloadElapsedMs = sw.Elapsed.TotalMilliseconds;
+        AddLog($"Loaded {_activeNodes.Count} node(s) ({LastReloadElapsedMs:F1} ms)");
+        return true;
+    }
+
     private void OnViewportRenderPass(ViewportRenderPassEvent evt)
     {
         if (_context == null)
@@ -202,12 +262,16 @@ public sealed class ExecutionPlugin : IEnginePlugin
 
         if (_executionContext != null && evt.VirtualWidth > 0 && evt.VirtualHeight > 0)
         {
-            _executionContext.VirtualWidth = evt.VirtualWidth;
-            _executionContext.VirtualHeight = evt.VirtualHeight;
+            if (_executionContext.VirtualWidth != evt.VirtualWidth ||
+                _executionContext.VirtualHeight != evt.VirtualHeight)
+            {
+                _executionContext.Display.VirtualResolution = new Vector2(evt.VirtualWidth, evt.VirtualHeight);
+            }
         }
 
-        foreach (IExecutableNode node in _activeNodes)
+        for (int i = 0; i < _activeNodes.Count; i++)
         {
+            IExecutableNode node = _activeNodes[i];
             try
             {
                 node.OnDraw(_context.Graphics);
@@ -226,8 +290,7 @@ public sealed class ExecutionPlugin : IEnginePlugin
             return;
         }
 
-        _executionContext.VirtualWidth = evt.VirtualWidth;
-        _executionContext.VirtualHeight = evt.VirtualHeight;
+        _executionContext.Display.VirtualResolution = new Vector2(evt.VirtualWidth, evt.VirtualHeight);
     }
 
     private void OnTimelinePropertyEvaluated(TimelinePropertyEvaluatedEvent evt)
@@ -346,11 +409,15 @@ public sealed class ExecutionPlugin : IEnginePlugin
         string ext = Path.GetExtension(evt.FilePath);
         string name = Path.GetFileName(evt.FilePath);
 
-        if (string.Equals(ext, ".cs", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(name, "project.json", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(name, "project.json", StringComparison.OrdinalIgnoreCase))
         {
             AddLog($"Hot-Reload: {name}");
-            ReloadProjectNodes();
+            ReloadProjectNodes(applyProjectConfig: true);
+        }
+        else if (string.Equals(ext, ".cs", StringComparison.OrdinalIgnoreCase))
+        {
+            AddLog($"Hot-Reload: {name}");
+            ReloadProjectNodes(applyProjectConfig: false);
         }
         else
         {
@@ -374,7 +441,7 @@ public sealed class ExecutionPlugin : IEnginePlugin
     private void OnProjectLoaded(ProjectLoadedEvent evt)
     {
         _lastProjectRootLoaded = Path.GetFullPath(evt.ProjectRoot);
-        ReloadProjectNodes();
+        ReloadProjectNodes(applyProjectConfig: true);
     }
 
     private void OnWorkspaceChanged(WorkspaceChangedEvent evt)
@@ -387,62 +454,11 @@ public sealed class ExecutionPlugin : IEnginePlugin
 
         _lastProjectRootLoaded = normalized;
         _executionContext?.ClearProperties();
-        ReloadProjectNodes();
-    }
-
-    private void ReloadProjectNodes()
-    {
-        if (_context == null || _executionContext == null)
-        {
-            return;
-        }
-
-        _runtimeError = null;
-        string[] scriptPaths = ResolveNodeScriptPaths(
-            out Dictionary<string, string> configuredStringProps,
-            out HashSet<string> disabledNodeIds,
-            out Dictionary<string, int> configuredOrder);
-
-        foreach (KeyValuePair<string, string> kvp in configuredStringProps)
-        {
-            _executionContext.SetStringProperty(kvp.Key, kvp.Value);
-        }
-
-        ScriptCompileResult result = ScriptCompiler.CompileNodesFromFiles(scriptPaths);
-
-        _compileErrors.Clear();
-        if (!result.Success)
-        {
-            _compileErrors.AddRange(result.Errors);
-            AddLog($"Compile error ({result.Errors.Count})");
-            return;
-        }
-
-        UnloadActiveNodes();
-        _scriptLoadContext = result.LoadContext;
-
-        IEnumerable<IExecutableNode> orderedNodes = result.Nodes
-            .Where(n => !disabledNodeIds.Contains(n.NodeId))
-            .OrderBy(n => configuredOrder.TryGetValue(n.NodeId, out int idx) ? idx : int.MaxValue)
-            .ThenBy(n => n.NodeId, StringComparer.Ordinal);
-
-        foreach (IExecutableNode node in orderedNodes)
-        {
-            try
-            {
-                node.OnInit(_executionContext);
-                _activeNodes.Add(node);
-            }
-            catch (Exception ex)
-            {
-                _runtimeError = $"[{node.NodeId}] OnInit: {ex.Message}";
-            }
-        }
-
-        AddLog($"Loaded {_activeNodes.Count} node(s)");
+        ReloadProjectNodes(applyProjectConfig: true);
     }
 
     private string[] ResolveNodeScriptPaths(
+        bool applyProjectConfig,
         out Dictionary<string, string> stringProperties,
         out HashSet<string> disabledNodeIds,
         out Dictionary<string, int> configuredOrder)
@@ -459,7 +475,6 @@ public sealed class ExecutionPlugin : IEnginePlugin
         var pathSet = new HashSet<string>(StringComparer.Ordinal);
         var scriptPaths = new List<string>();
 
-        // Always compile all C# scripts in scripts/ together so multi-file scenes, helpers, and generators link seamlessly.
         foreach (string scriptFile in _context.Workspace.EnumerateFiles("scripts", "*.cs", recursive: true))
         {
             string fullPath = Path.GetFullPath(scriptFile);
@@ -476,17 +491,9 @@ public sealed class ExecutionPlugin : IEnginePlugin
             {
                 string json = File.ReadAllText(projectJsonPath);
                 ProjectDocument? doc = JsonSerializer.Deserialize<ProjectDocument>(json, JsonOptions);
-                if (doc != null && _executionContext != null)
+                if (doc != null && _executionContext != null && applyProjectConfig)
                 {
-                    if (doc.VirtualWidth >= 64)
-                    {
-                        _executionContext.VirtualWidth = doc.VirtualWidth;
-                    }
-
-                    if (doc.VirtualHeight >= 64)
-                    {
-                        _executionContext.VirtualHeight = doc.VirtualHeight;
-                    }
+                    ApplyManifestConfiguration(doc);
                 }
 
                 if (doc?.Nodes is { Count: > 0 })
@@ -537,23 +544,142 @@ public sealed class ExecutionPlugin : IEnginePlugin
         return scriptPaths.ToArray();
     }
 
-    private void UnloadActiveNodes()
+    private void ApplyManifestConfiguration(ProjectDocument doc)
     {
-        for (int i = _activeNodes.Count - 1; i >= 0; i--)
+        if (_executionContext == null)
         {
-            IExecutableNode node = _activeNodes[i];
+            return;
+        }
+
+        int virtualW = doc.Display?.VirtualWidth is >= 64 ? doc.Display.VirtualWidth.Value : doc.VirtualWidth;
+        int virtualH = doc.Display?.VirtualHeight is >= 64 ? doc.Display.VirtualHeight.Value : doc.VirtualHeight;
+
+        if (virtualW >= 64 && virtualH >= 64)
+        {
+            _executionContext.Display.VirtualResolution = new Vector2(virtualW, virtualH);
+        }
+
+        if (doc.Display != null)
+        {
+            _executionContext.Display.ScalingMode = Enum.TryParse(doc.Display.ScalingMode, ignoreCase: true, out ScalingMode scaling)
+                ? scaling
+                : ScalingMode.FitLetterbox;
+
+            _executionContext.Display.Snapping = Enum.TryParse(doc.Display.Snapping, ignoreCase: true, out PixelSnapping snapping)
+                ? snapping
+                : PixelSnapping.Disabled;
+        }
+        else
+        {
+            _executionContext.Display.Snapping = PixelSnapping.Disabled;
+        }
+
+        foreach (AudioBus bus in Enum.GetValues<AudioBus>())
+        {
+            _executionContext.Audio.SetBusVolume(bus, 1.0f);
+        }
+
+        if (doc.AudioBuses != null)
+        {
+            foreach (KeyValuePair<string, float> kvp in doc.AudioBuses)
+            {
+                if (Enum.TryParse(kvp.Key, ignoreCase: true, out AudioBus parsedBus))
+                {
+                    _executionContext.Audio.SetBusVolume(parsedBus, kvp.Value);
+                }
+            }
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private bool LoadAndActivateNodes(
+        byte[]? peBytes,
+        HashSet<string> disabledNodeIds,
+        Dictionary<string, int> configuredOrder,
+        out IReadOnlyList<string> errors)
+    {
+        if (_context == null || _executionContext == null)
+        {
+            errors = Array.Empty<string>();
+            return false;
+        }
+
+        ScriptCompileResult result = ScriptCompiler.LoadNodesFromPeBytes(peBytes);
+        if (!result.Success)
+        {
+            errors = result.Errors;
+            return false;
+        }
+
+        errors = Array.Empty<string>();
+        _scriptLoadContext = result.LoadContext;
+
+        var scope = new ScriptAssemblyScope(_context.EventBus, _context.Graphics);
+        _scriptScope = scope;
+        _executionContext.AttachScope(scope);
+
+        IEnumerable<IExecutableNode> orderedNodes = result.Nodes
+            .Where(n => !disabledNodeIds.Contains(n.NodeId))
+            .OrderBy(n => configuredOrder.TryGetValue(n.NodeId, out int idx) ? idx : int.MaxValue)
+            .ThenBy(n => n.NodeId, StringComparer.Ordinal);
+
+        foreach (IExecutableNode node in orderedNodes)
+        {
             try
             {
-                node.OnUnload();
+                scope.RegisterNode(node);
+                node.OnInit(_executionContext);
+                _activeNodes.Add(node);
             }
             catch (Exception ex)
             {
-                _runtimeError = $"[{node.NodeId}] OnUnload: {ex.Message}";
-                AddLog($"[{node.NodeId}] OnUnload error: {ex.Message}");
+                _runtimeError = $"[{node.NodeId}] OnInit: {ex.Message}";
             }
         }
 
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public void UnloadActiveNodes()
+    {
+        // Clear references held by plugin first so ALC isn't kept rooted if scope disposal throws.
+        var fallbackNodes = _activeNodes.ToArray();
         _activeNodes.Clear();
+
+        if (_scriptScope != null)
+        {
+            ScriptAssemblyScope scope = _scriptScope;
+            _scriptScope = null;
+            scope.Dispose((node, ex) =>
+            {
+                _runtimeError = $"[{node.NodeId}] OnUnload: {ex.Message}";
+                AddLog($"[{node.NodeId}] OnUnload error: {ex.Message}");
+            });
+        }
+        else
+        {
+            for (int i = fallbackNodes.Length - 1; i >= 0; i--)
+            {
+                IExecutableNode node = fallbackNodes[i];
+                try
+                {
+                    node.OnUnload();
+                }
+                catch (Exception ex)
+                {
+                    _runtimeError = $"[{node.NodeId}] OnUnload: {ex.Message}";
+                    AddLog($"[{node.NodeId}] OnUnload error: {ex.Message}");
+                }
+            }
+        }
+
+        if (_context != null && _executionContext != null)
+        {
+            // Detach the disposed scope from ExecutionContext so no references to old script assembly remain reachable.
+            _executionContext.AttachScope(new ScriptAssemblyScope(_context.EventBus, _context.Graphics));
+        }
+
         if (_scriptLoadContext != null)
         {
             _scriptLoadContext.Unload();

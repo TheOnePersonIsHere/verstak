@@ -9,14 +9,22 @@ public sealed class RaylibGraphicsService : IGraphicsService, IDisposable
 {
     private readonly IWorkspaceService _workspace;
     private readonly IEventBus _eventBus;
+    private IVirtualDisplayService? _displayService;
+    private RaylibQuadBatchService? _quadBatchService;
+
     private readonly List<Texture2D> _texturesByHandle = new() { default };
     private readonly List<string> _handleResolvedPaths = new() { string.Empty };
     private readonly Dictionary<string, int> _resolvedPathToHandleId = new(StringComparer.Ordinal);
     private readonly HashSet<string> _missingLogged = new(StringComparer.Ordinal);
+
     private readonly Dictionary<string, RenderTexture2D> _surfaceCache = new(StringComparer.Ordinal);
     private readonly Stack<RenderTexture2D> _activeTargetStack = new();
+
     private readonly Dictionary<string, Shader> _shaderCache = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Shader> _shaderByRawPath = new(StringComparer.Ordinal);
+    private readonly Dictionary<(uint ShaderId, string UniformName), int> _shaderLocationCache = new();
     private readonly HashSet<string> _invalidShadersLogged = new(StringComparer.Ordinal);
+
     private readonly Stack<Shader?> _shaderStack = new();
     private readonly Stack<(int TargetDepth, Camera2D Camera)> _camera2DStack = new();
     private readonly Stack<BlendMode> _blendModeStack = new();
@@ -26,10 +34,55 @@ public sealed class RaylibGraphicsService : IGraphicsService, IDisposable
     private bool _isInRenderTarget;
     private bool _disposed;
 
-    public RaylibGraphicsService(IWorkspaceService workspace, IEventBus eventBus)
+    public RaylibGraphicsService(
+        IWorkspaceService workspace,
+        IEventBus eventBus,
+        IVirtualDisplayService? displayService = null)
     {
         _workspace = workspace;
         _eventBus = eventBus;
+        _displayService = displayService;
+    }
+
+    internal void AttachDisplayService(IVirtualDisplayService displayService)
+    {
+        _displayService = displayService;
+    }
+
+    internal void AttachQuadBatchService(RaylibQuadBatchService batchService)
+    {
+        _quadBatchService = batchService;
+    }
+
+    internal BlendMode CurrentBlendMode => _blendModeStack.TryPeek(out BlendMode mode) ? mode : BlendMode.Alpha;
+
+    internal Shader? CurrentShader => _shaderStack.TryPeek(out Shader? shader) ? shader : null;
+
+    internal bool TryResolveTextureForBatch(TextureHandle handle, out Texture2D texture)
+    {
+        return TryGetTextureByHandle(handle, out texture);
+    }
+
+    internal bool TryResolveShaderForBatch(string? fragmentShaderPath, out Shader shader)
+    {
+        if (string.IsNullOrWhiteSpace(fragmentShaderPath))
+        {
+            shader = default;
+            return false;
+        }
+
+        if (_shaderByRawPath.TryGetValue(fragmentShaderPath, out shader) && Raylib.IsShaderValid(shader))
+        {
+            return true;
+        }
+
+        if (TryGetOrLoadShader(fragmentShaderPath, null, out shader))
+        {
+            _shaderByRawPath[fragmentShaderPath] = shader;
+            return true;
+        }
+
+        return false;
     }
 
     public TextureHandle GetTextureHandle(string assetPath)
@@ -160,6 +213,12 @@ public sealed class RaylibGraphicsService : IGraphicsService, IDisposable
             return;
         }
 
+        if (_displayService != null && _displayService.Snapping != PixelSnapping.Disabled)
+        {
+            target = _displayService.SnapCoordinates(target);
+            offset = _displayService.SnapCoordinates(offset);
+        }
+
         int targetDepth = _activeTargetStack.Count;
         if (_camera2DStack.TryPeek(out var current) && current.TargetDepth == targetDepth)
         {
@@ -237,7 +296,9 @@ public sealed class RaylibGraphicsService : IGraphicsService, IDisposable
     {
         if (!_hasRenderTexture)
         {
-            EnsureRenderTexture(960, 540);
+            int w = _displayService != null ? Math.Max(64, (int)_displayService.VirtualResolution.X) : 960;
+            int h = _displayService != null ? Math.Max(64, (int)_displayService.VirtualResolution.Y) : 540;
+            EnsureRenderTexture(w, h);
         }
 
         return _renderTexture;
@@ -279,7 +340,9 @@ public sealed class RaylibGraphicsService : IGraphicsService, IDisposable
 
         if (!_hasRenderTexture)
         {
-            EnsureRenderTexture(960, 540);
+            int w = _displayService != null ? Math.Max(64, (int)_displayService.VirtualResolution.X) : 960;
+            int h = _displayService != null ? Math.Max(64, (int)_displayService.VirtualResolution.Y) : 540;
+            EnsureRenderTexture(w, h);
         }
 
         if (_hasRenderTexture && !_isInRenderTarget)
@@ -293,6 +356,8 @@ public sealed class RaylibGraphicsService : IGraphicsService, IDisposable
 
     public void EndRenderTarget()
     {
+        _quadBatchService?.EnsureEndedIfOpen();
+
         if (!Raylib.IsWindowReady())
         {
             _camera2DStack.Clear();
@@ -336,6 +401,131 @@ public sealed class RaylibGraphicsService : IGraphicsService, IDisposable
         }
     }
 
+    internal RenderTexture2D EnsureNamedSurface(string key, int width, int height)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        if (!Raylib.IsWindowReady())
+        {
+            return default;
+        }
+
+        int clampedW = Math.Clamp(width, 1, 4096);
+        int clampedH = Math.Clamp(height, 1, 4096);
+
+        if (_surfaceCache.TryGetValue(key, out RenderTexture2D surface) &&
+            Raylib.IsRenderTextureValid(surface) &&
+            surface.Texture.Width == clampedW &&
+            surface.Texture.Height == clampedH)
+        {
+            return surface;
+        }
+
+        if (Raylib.IsRenderTextureValid(surface))
+        {
+            Raylib.UnloadRenderTexture(surface);
+        }
+
+        surface = Raylib.LoadRenderTexture(clampedW, clampedH);
+        if (Raylib.IsRenderTextureValid(surface))
+        {
+            _surfaceCache[key] = surface;
+            return surface;
+        }
+
+        return default;
+    }
+
+    internal bool TryGetNamedSurface(string key, out RenderTexture2D surface)
+    {
+        if (_surfaceCache.TryGetValue(key, out surface) && Raylib.IsRenderTextureValid(surface))
+        {
+            return true;
+        }
+
+        surface = default;
+        return false;
+    }
+
+    internal Vector2 GetActiveTargetSize()
+    {
+        if (_activeTargetStack.Count > 0)
+        {
+            RenderTexture2D top = _activeTargetStack.Peek();
+            return new Vector2(top.Texture.Width, top.Texture.Height);
+        }
+
+        if (_hasRenderTexture && Raylib.IsRenderTextureValid(_renderTexture))
+        {
+            return new Vector2(_renderTexture.Texture.Width, _renderTexture.Texture.Height);
+        }
+
+        return Raylib.IsWindowReady()
+            ? new Vector2(Raylib.GetScreenWidth(), Raylib.GetScreenHeight())
+            : new Vector2(960f, 540f);
+    }
+
+    internal void BeginNamedTarget(string key, Color? clearColor = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        if (!Raylib.IsWindowReady())
+        {
+            return;
+        }
+
+        if (!TryGetNamedSurface(key, out RenderTexture2D surface))
+        {
+            int defaultW = _displayService != null ? (int)_displayService.VirtualResolution.X : 960;
+            int defaultH = _displayService != null ? (int)_displayService.VirtualResolution.Y : 540;
+            surface = EnsureNamedSurface(key, defaultW, defaultH);
+        }
+
+        if (!Raylib.IsRenderTextureValid(surface))
+        {
+            return;
+        }
+
+        BeginSurfaceWithExisting(surface);
+        if (clearColor.HasValue)
+        {
+            Raylib.ClearBackground(clearColor.Value);
+        }
+    }
+
+    internal void EndNamedTarget()
+    {
+        EndSurface();
+    }
+
+    internal void EnsureBatchEndedIfOpen()
+    {
+        _quadBatchService?.EnsureEndedIfOpen();
+    }
+
+    internal Camera2D? SuspendActiveCameraForCurrentTarget()
+    {
+        if (!Raylib.IsWindowReady() || _camera2DStack.Count == 0)
+        {
+            return null;
+        }
+
+        var peek = _camera2DStack.Peek();
+        if (peek.TargetDepth != _activeTargetStack.Count)
+        {
+            return null;
+        }
+
+        Raylib.EndMode2D();
+        return peek.Camera;
+    }
+
+    internal void RestoreSuspendedCamera(Camera2D? camera)
+    {
+        if (camera.HasValue && Raylib.IsWindowReady())
+        {
+            Raylib.BeginMode2D(camera.Value);
+        }
+    }
+
     public void BeginSurface(string key, int width, int height)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
@@ -344,8 +534,18 @@ public sealed class RaylibGraphicsService : IGraphicsService, IDisposable
             return;
         }
 
-        int clampedW = Math.Clamp(width, 1, 4096);
-        int clampedH = Math.Clamp(height, 1, 4096);
+        RenderTexture2D surface = EnsureNamedSurface(key, width, height);
+        if (!Raylib.IsRenderTextureValid(surface))
+        {
+            return;
+        }
+
+        BeginSurfaceWithExisting(surface);
+    }
+
+    private void BeginSurfaceWithExisting(RenderTexture2D surface)
+    {
+        _quadBatchService?.EnsureEndedIfOpen();
 
         if (_activeTargetStack.Count > 0)
         {
@@ -357,40 +557,14 @@ public sealed class RaylibGraphicsService : IGraphicsService, IDisposable
             Raylib.EndTextureMode();
         }
 
-        if (!_surfaceCache.TryGetValue(key, out RenderTexture2D surface) ||
-            !Raylib.IsRenderTextureValid(surface) ||
-            surface.Texture.Width != clampedW ||
-            surface.Texture.Height != clampedH)
-        {
-            if (Raylib.IsRenderTextureValid(surface))
-            {
-                Raylib.UnloadRenderTexture(surface);
-            }
-
-            surface = Raylib.LoadRenderTexture(clampedW, clampedH);
-            if (!Raylib.IsRenderTextureValid(surface))
-            {
-                if (_activeTargetStack.Count > 0)
-                {
-                    Raylib.BeginTextureMode(_activeTargetStack.Peek());
-                    if (_camera2DStack.TryPeek(out var restoredCam) && restoredCam.TargetDepth == _activeTargetStack.Count)
-                    {
-                        Raylib.BeginMode2D(restoredCam.Camera);
-                    }
-                }
-
-                return;
-            }
-
-            _surfaceCache[key] = surface;
-        }
-
         Raylib.BeginTextureMode(surface);
         _activeTargetStack.Push(surface);
     }
 
     public void EndSurface()
     {
+        _quadBatchService?.EnsureEndedIfOpen();
+
         if (_activeTargetStack.Count == 0)
         {
             return;
@@ -504,7 +678,7 @@ public sealed class RaylibGraphicsService : IGraphicsService, IDisposable
             return;
         }
 
-        int loc = Raylib.GetShaderLocation(shader, uniformName);
+        int loc = GetCachedShaderLocation(shader, uniformName);
         if (loc >= 0)
         {
             Raylib.SetShaderValue(shader, loc, value, ShaderUniformDataType.Float);
@@ -518,7 +692,7 @@ public sealed class RaylibGraphicsService : IGraphicsService, IDisposable
             return;
         }
 
-        int loc = Raylib.GetShaderLocation(shader, uniformName);
+        int loc = GetCachedShaderLocation(shader, uniformName);
         if (loc >= 0)
         {
             Raylib.SetShaderValue(shader, loc, value, ShaderUniformDataType.Vec2);
@@ -532,7 +706,7 @@ public sealed class RaylibGraphicsService : IGraphicsService, IDisposable
             return;
         }
 
-        int loc = Raylib.GetShaderLocation(shader, uniformName);
+        int loc = GetCachedShaderLocation(shader, uniformName);
         if (loc >= 0)
         {
             Vector4 vec = new(value.R / 255f, value.G / 255f, value.B / 255f, value.A / 255f);
@@ -540,13 +714,45 @@ public sealed class RaylibGraphicsService : IGraphicsService, IDisposable
         }
     }
 
+    public void SetShaderSurface(string fragmentShaderPath, string uniformName, string surfaceName)
+    {
+        if (!TryGetOrLoadShader(fragmentShaderPath, null, out Shader shader) ||
+            !TryGetNamedSurface(surfaceName, out RenderTexture2D surface))
+        {
+            return;
+        }
+
+        int loc = GetCachedShaderLocation(shader, uniformName);
+        if (loc >= 0)
+        {
+            Raylib.SetShaderValueTexture(shader, loc, surface.Texture);
+        }
+    }
+
+    public void SetShaderTexture(string fragmentShaderPath, string uniformName, TextureHandle textureHandle)
+    {
+        if (!TryGetOrLoadShader(fragmentShaderPath, null, out Shader shader) ||
+            !TryGetTextureByHandle(textureHandle, out Texture2D texture))
+        {
+            return;
+        }
+
+        int loc = GetCachedShaderLocation(shader, uniformName);
+        if (loc >= 0)
+        {
+            Raylib.SetShaderValueTexture(shader, loc, texture);
+        }
+    }
+
     public void InvalidateShader(string path)
     {
         string resolved = _workspace.ResolvePath(path);
         _invalidShadersLogged.Remove(resolved);
+        _shaderByRawPath.Clear();
 
         if (_shaderCache.Remove(resolved, out Shader shader) && Raylib.IsShaderValid(shader))
         {
+            RemoveCachedLocationsForShader(shader.Id);
             Raylib.UnloadShader(shader);
             _eventBus.Publish(new EngineLogEvent("Graphics", "Info", $"Shader invalidated for reload: {_workspace.ToRelativePath(resolved)}"));
         }
@@ -584,6 +790,40 @@ public sealed class RaylibGraphicsService : IGraphicsService, IDisposable
         }
 
         ResetTextureCacheState();
+    }
+
+    private int GetCachedShaderLocation(Shader shader, string uniformName)
+    {
+        var key = (shader.Id, uniformName);
+        if (_shaderLocationCache.TryGetValue(key, out int loc))
+        {
+            return loc;
+        }
+
+        loc = Raylib.GetShaderLocation(shader, uniformName);
+        _shaderLocationCache[key] = loc;
+        return loc;
+    }
+
+    private void RemoveCachedLocationsForShader(uint shaderId)
+    {
+        List<(uint ShaderId, string UniformName)>? keysToRemove = null;
+        foreach (var key in _shaderLocationCache.Keys)
+        {
+            if (key.ShaderId == shaderId)
+            {
+                keysToRemove ??= new List<(uint, string)>();
+                keysToRemove.Add(key);
+            }
+        }
+
+        if (keysToRemove != null)
+        {
+            foreach (var key in keysToRemove)
+            {
+                _shaderLocationCache.Remove(key);
+            }
+        }
     }
 
     private void ResetTextureCacheState()
@@ -748,9 +988,21 @@ public sealed class RaylibGraphicsService : IGraphicsService, IDisposable
             return false;
         }
 
+        if (string.IsNullOrWhiteSpace(vertexShaderPath) &&
+            _shaderByRawPath.TryGetValue(fragmentShaderPath, out shader) &&
+            Raylib.IsShaderValid(shader))
+        {
+            return true;
+        }
+
         string resolvedFs = _workspace.ResolvePath(fragmentShaderPath);
         if (_shaderCache.TryGetValue(resolvedFs, out shader) && Raylib.IsShaderValid(shader))
         {
+            if (string.IsNullOrWhiteSpace(vertexShaderPath))
+            {
+                _shaderByRawPath[fragmentShaderPath] = shader;
+            }
+
             return true;
         }
 
@@ -782,6 +1034,11 @@ public sealed class RaylibGraphicsService : IGraphicsService, IDisposable
 
         _invalidShadersLogged.Remove(resolvedFs);
         _shaderCache[resolvedFs] = shader;
+        if (string.IsNullOrWhiteSpace(vertexShaderPath))
+        {
+            _shaderByRawPath[fragmentShaderPath] = shader;
+        }
+
         return true;
     }
 
@@ -831,6 +1088,8 @@ public sealed class RaylibGraphicsService : IGraphicsService, IDisposable
             ResetTextureCacheState();
             _surfaceCache.Clear();
             _shaderCache.Clear();
+            _shaderByRawPath.Clear();
+            _shaderLocationCache.Clear();
             _hasRenderTexture = false;
             return;
         }
@@ -855,6 +1114,8 @@ public sealed class RaylibGraphicsService : IGraphicsService, IDisposable
             }
         }
         _shaderCache.Clear();
+        _shaderByRawPath.Clear();
+        _shaderLocationCache.Clear();
         _invalidShadersLogged.Clear();
 
         if (_hasRenderTexture && Raylib.IsRenderTextureValid(_renderTexture))

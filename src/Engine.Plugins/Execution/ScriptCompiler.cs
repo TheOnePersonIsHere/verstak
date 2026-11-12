@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
 using System.Text;
 using Engine.Core.Abstractions;
@@ -18,6 +19,11 @@ public sealed class ScriptAssemblyLoadContext : AssemblyLoadContext
     protected override Assembly? Load(AssemblyName assemblyName) => null;
 }
 
+public sealed record ScriptEmitResult(
+    bool Success,
+    byte[]? PeBytes,
+    IReadOnlyList<string> Errors);
+
 public sealed record ScriptCompileResult(
     bool Success,
     ScriptAssemblyLoadContext? LoadContext,
@@ -27,28 +33,34 @@ public sealed record ScriptCompileResult(
 public static class ScriptCompiler
 {
     private static readonly Lazy<IReadOnlyList<MetadataReference>> BaseReferences = new(BuildMetadataReferences);
+    private static readonly SyntaxTree GlobalUsingsSyntaxTree = CSharpSyntaxTree.ParseText(
+        """
+        global using System;
+        global using System.Collections.Generic;
+        global using System.IO;
+        global using System.Linq;
+        global using System.Numerics;
+        """,
+        path: "__GlobalUsings__.g.cs",
+        encoding: Encoding.UTF8);
 
-    public static ScriptCompileResult CompileNodesFromFiles(IEnumerable<string> scriptPaths)
+    private static readonly CSharpCompilationOptions CompilationOptions = new(
+        OutputKind.DynamicallyLinkedLibrary,
+        optimizationLevel: OptimizationLevel.Debug);
+
+    public static ScriptEmitResult EmitNodesFromFiles(IEnumerable<string> scriptPaths)
     {
         var paths = scriptPaths.Where(File.Exists).Distinct(StringComparer.Ordinal).ToArray();
         if (paths.Length == 0)
         {
-            return new ScriptCompileResult(true, null, Array.Empty<IExecutableNode>(), Array.Empty<string>());
+            return new ScriptEmitResult(true, Array.Empty<byte>(), Array.Empty<string>());
         }
 
         var syntaxTrees = new List<SyntaxTree>(paths.Length + 1)
         {
-            CSharpSyntaxTree.ParseText(
-                """
-                global using System;
-                global using System.Collections.Generic;
-                global using System.IO;
-                global using System.Linq;
-                global using System.Numerics;
-                """,
-                path: "__GlobalUsings__.g.cs",
-                encoding: Encoding.UTF8)
+            GlobalUsingsSyntaxTree
         };
+
         foreach (string path in paths)
         {
             string source = File.ReadAllText(path, Encoding.UTF8);
@@ -60,11 +72,9 @@ public static class ScriptCompiler
             assemblyName,
             syntaxTrees,
             BaseReferences.Value,
-            new CSharpCompilationOptions(
-                OutputKind.DynamicallyLinkedLibrary,
-                optimizationLevel: OptimizationLevel.Debug));
+            CompilationOptions);
 
-        using var peStream = new MemoryStream();
+        using var peStream = new MemoryStream(16_384);
         EmitResult emitResult = compilation.Emit(peStream);
 
         if (!emitResult.Success)
@@ -74,13 +84,24 @@ public static class ScriptCompiler
                 .Select(d => d.ToString())
                 .ToArray();
 
-            return new ScriptCompileResult(false, null, Array.Empty<IExecutableNode>(), errors);
+            return new ScriptEmitResult(false, null, errors);
         }
 
-        peStream.Position = 0;
+        return new ScriptEmitResult(true, peStream.ToArray(), Array.Empty<string>());
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static ScriptCompileResult LoadNodesFromPeBytes(byte[]? peBytes)
+    {
+        if (peBytes == null || peBytes.Length == 0)
+        {
+            return new ScriptCompileResult(true, null, Array.Empty<IExecutableNode>(), Array.Empty<string>());
+        }
+
         var loadContext = new ScriptAssemblyLoadContext();
         try
         {
+            using var peStream = new MemoryStream(peBytes, writable: false);
             Assembly assembly = loadContext.LoadFromStream(peStream);
             var nodes = new List<IExecutableNode>();
 
@@ -104,6 +125,18 @@ public static class ScriptCompiler
             loadContext.Unload();
             return new ScriptCompileResult(false, null, Array.Empty<IExecutableNode>(), [ex.Message]);
         }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static ScriptCompileResult CompileNodesFromFiles(IEnumerable<string> scriptPaths)
+    {
+        ScriptEmitResult emit = EmitNodesFromFiles(scriptPaths);
+        if (!emit.Success)
+        {
+            return new ScriptCompileResult(false, null, Array.Empty<IExecutableNode>(), emit.Errors);
+        }
+
+        return LoadNodesFromPeBytes(emit.PeBytes);
     }
 
     private static IReadOnlyList<MetadataReference> BuildMetadataReferences()

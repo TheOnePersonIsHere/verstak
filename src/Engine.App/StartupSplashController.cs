@@ -596,6 +596,19 @@ public sealed class StartupSplashController : IDisposable
                 _projectVirtualHeight = h;
             }
 
+            if (root.TryGetProperty("display", out JsonElement dispEl) && dispEl.ValueKind == JsonValueKind.Object)
+            {
+                if (dispEl.TryGetProperty("virtualWidth", out JsonElement dwEl) && dwEl.TryGetInt32(out int dw) && dw >= 64)
+                {
+                    _projectVirtualWidth = dw;
+                }
+
+                if (dispEl.TryGetProperty("virtualHeight", out JsonElement dhEl) && dhEl.TryGetInt32(out int dh) && dh >= 64)
+                {
+                    _projectVirtualHeight = dh;
+                }
+            }
+
             if (root.TryGetProperty("nodes", out JsonElement nodesEl) && nodesEl.ValueKind == JsonValueKind.Array)
             {
                 foreach (JsonElement node in nodesEl.EnumerateArray())

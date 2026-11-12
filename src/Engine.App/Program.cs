@@ -50,13 +50,16 @@ public static class Program
         WorkbenchTheme.Apply(settings.GetString(WorkbenchTheme.SettingKey, WorkbenchTheme.StudioGraphiteId));
         var menuRegistry = new MenuRegistry();
         var workspace = new WorkspaceService(projectRoot, eventBus);
-        using var graphics = new RaylibGraphicsService(workspace, eventBus);
-        using var audio = new RaylibAudioService(workspace, eventBus);
+        var display = new VirtualDisplayService();
+        using var graphics = new RaylibGraphicsService(workspace, eventBus, display);
+        using var batcher = new RaylibQuadBatchService(graphics);
+        var compositor = new SurfaceCompositor(graphics);
+        using var audio = new RaylibAudioMixerService(workspace, eventBus);
         var input = new RaylibInputService();
-        var runtime = new ExecutionContext(graphics, audio, eventBus, workspace, input);
+        var runtime = new ExecutionContext(graphics, audio, eventBus, workspace, input, batcher, display, compositor);
         var imguiInputBridge = new ImGuiInputBridge();
 
-        var pluginContext = new PluginContext(graphics, audio, eventBus, workspace, input, settings, menuRegistry, runtime);
+        var pluginContext = new PluginContext(graphics, audio, eventBus, workspace, input, settings, menuRegistry, runtime, batcher, display, compositor);
         var pluginHost = new PluginHost(pluginContext);
 
         pluginHost.RegisterPlugin(new WorkspaceExplorerPlugin(), canDisable: true, defaultWindowVisible: true);
@@ -120,6 +123,7 @@ public static class Program
 
             frameCount++;
             float dt = MathF.Min(Raylib.GetFrameTime(), 0.1f);
+            audio.Tick(dt);
 
             if (lifecycleState == AppLifecycleState.Splash && splash != null)
             {
@@ -134,6 +138,7 @@ public static class Program
                         input,
                         pluginHost,
                         graphics,
+                        batcher,
                         eventBus,
                         settings,
                         menuRegistry,
@@ -167,6 +172,7 @@ public static class Program
                         input,
                         pluginHost,
                         graphics,
+                        batcher,
                         eventBus,
                         settings,
                         menuRegistry,
@@ -185,6 +191,7 @@ public static class Program
                 input,
                 pluginHost,
                 graphics,
+                batcher,
                 eventBus,
                 settings,
                 menuRegistry,
@@ -199,6 +206,7 @@ public static class Program
         macOsMenu?.Dispose();
         pluginHost.UnloadAll();
         audio.Dispose();
+        batcher.Dispose();
         graphics.Dispose();
         rlImGui.Shutdown();
         Raylib.CloseAudioDevice();
@@ -211,6 +219,7 @@ public static class Program
         RaylibInputService input,
         PluginHost pluginHost,
         RaylibGraphicsService graphics,
+        RaylibQuadBatchService batcher,
         IEventBus eventBus,
         ISettingsService settings,
         IMenuService menuRegistry,
@@ -233,8 +242,10 @@ public static class Program
 
         graphics.BeginRenderTarget();
         graphics.Clear(clearColor);
+        batcher.BeginFrame();
         eventBus.Publish(new ViewportRenderPassEvent(renderTarget.Texture.Width, renderTarget.Texture.Height));
         graphics.EndRenderTarget();
+        batcher.EndFrame();
 
         Raylib.BeginDrawing();
         Raylib.ClearBackground(new Color(18, 18, 20, 255));

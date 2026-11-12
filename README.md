@@ -1,8 +1,8 @@
-# WorkbenchEngine (Minimal 2D Workbench & Runtime)
+# VerstakEngine (Minimal 2D Workbench & Runtime)
 
 > **Language:** English | [Русская версия (README.ru.md)](README.ru.md)
 
-**WorkbenchEngine** is a lightweight, open-source, domain-agnostic 2D workbench and runtime built on **.NET 8 / C# 12**, **Raylib-cs**, **ImGui.NET**, and **Roslyn**.
+**VerstakEngine** is a lightweight, open-source, domain-agnostic 2D workbench and runtime built on **.NET 8 / C# 12**, **Raylib-cs**, **ImGui.NET**, and **Roslyn**.
 
 Its core contains **zero game-domain knowledge** (no built-in concepts of genres, characters, dialogs, quests, or physics rules). Instead, it provides low-level OS/GPU primitives, file hot-reloading, a modular plugin UI, interactive 2D layer composition, timeline evaluation, shaders/offscreen surfaces, and dynamic C# script execution orchestrated cleanly via an event bus.
 
@@ -10,9 +10,9 @@ Its core contains **zero game-domain knowledge** (no built-in concepts of genres
 
 ## Key Architectural Principles
 
-1. **Zero Game-Domain Knowledge (`Engine.Core`)**: The core only manages windows, input, audio buffers, 2D textures (`TextureHandle` fast cache), hardware 2D camera (`Camera2D`), blend modes, offscreen surfaces (`FBO`s), fragment shaders, settings, command menus, workspaces, and plugin lifecycles.
+1. **Zero Game-Domain Knowledge (`Engine.Core`)**: `Engine.Core` strictly forbids game-domain concepts (entities, grid coordinates, tiles, inventories, collisions, physics bodies, or characters). It operates solely on hardware and runtime abstractions: windows, input, GPU vertex/index batching (`IQuadBatchService`), 2D textures (`TextureHandle` fast cache), virtual display projection & coordinate snapping (`IVirtualDisplayService`), multi-pass FBO compositing (`ISurfaceCompositor`), hardware `Camera2D` & `BlendMode`, GLSL fragment shaders, polyphonic bus audio mixing (`IAudioMixerService`), deterministic assembly teardown scopes (`IScriptScope`), settings, command menus, workspaces, and plugin lifecycles.
 2. **Plugin-First UI (`Engine.Plugins`)**: Every editor panel (`Project`, `Layers`, `Inspector`, `Viewport`, `Timeline`, `Execution`, `Settings`) is an independent `IEnginePlugin` that communicates over contracts and `IEventBus` events, and can be toggled on/off at runtime.
-3. **Data-Driven & Code-Agnostic**: Scenes are plain JSON (`scenes/*.scene.json`), assets are workspace files, and behaviors are external C# scripts (`scripts/**/*.cs`) implementing `IExecutableNode`.
+3. **Data-Driven & Code-Agnostic**: Scenes are plain JSON (`scenes/*.scene.json`), assets are workspace files, and behaviors or full simulations are external C# scripts (`scripts/**/*.cs`) implementing `IExecutableNode`.
 4. **VS Code First Workflow**: There is no built-in text editor. Edit C# scripts, JSON documents, or GLSL shaders in VS Code and the workbench automatically hot-reloads modified assets, shaders, scenes, and compiled script assemblies.
 
 ---
@@ -70,17 +70,17 @@ WorkbenchEngine/
 ├── HandshakeShowcase/              # Showcase demo: procedural characters & logo reveal
 └── src/
     ├── Engine.Core/                # Domain-agnostic core & service contracts
-    │   ├── Abstractions/           # Interfaces (IEnginePlugin, IGraphicsService, TextureHandle, etc.)
-    │   ├── Audio/                  # RaylibAudioService
+    │   ├── Abstractions/           # Interfaces (IEnginePlugin, IGraphicsService, IQuadBatchService, IVirtualDisplayService, ISurfaceCompositor, IAudioMixerService, IScriptScope, IExecutableNode)
+    │   ├── Audio/                  # RaylibAudioMixerService & RaylibAudioService
     │   ├── Events/                 # EventBus & standard EngineEvents
-    │   ├── Graphics/               # RaylibGraphicsService (textures, Camera2D, BlendMode, surfaces, shaders)
-    │   └── Plugins/                # PluginHost, PluginContext, Settings, MenuRegistry, Input
+    │   ├── Graphics/               # RaylibGraphicsService, RaylibQuadBatchService, VirtualDisplayService, SurfaceCompositor
+    │   └── Plugins/                # PluginHost, PluginContext, ScriptAssemblyScope, Settings, MenuRegistry, Input
     ├── Engine.Plugins/             # Default workbench plugins
     │   ├── Workspace/              # WorkspaceExplorerPlugin (file tree + FileSystemWatcher)
-    │   ├── Viewport/               # ViewportPlugin (RenderTexture display & 2D gizmos)
+    │   ├── Viewport/               # ViewportPlugin (virtual display matrix, Point/Bilinear filter, DrawCall telemetry, 2D gizmos)
     │   ├── Scene/                  # SceneLayersPlugin (Layers + Inspector + C# export)
     │   ├── Timeline/               # UniversalTimelinePlugin (property curves & triggers)
-    │   ├── Execution/              # ExecutionPlugin (Roslyn compiler + runtime host)
+    │   ├── Execution/              # ExecutionPlugin (Roslyn emit/load, ScriptAssemblyScope teardown, Hot-Reload telemetry)
     │   └── Settings/               # WorkbenchSettingsPlugin & WorkbenchTheme (Studio Graphite / Cobalt)
     └── Engine.App/                 # Desktop host entry point
         ├── Assets/VerstakAppIcon.png  # Embedded 512x512 macOS squircle Dock & window icon
@@ -109,7 +109,11 @@ WorkbenchEngine/
   * `E` / **Rot:** Drag the top green rotation handle (`Shift` snaps rotation to 15° steps).
   * `R` / **Scale:** Drag corner handles for proportional scaling (`Shift` unlocks non-uniform X/Y stretch) or edge midpoints in `Scale` mode.
   * `G`: Toggle grid overlay.
-* **Resolution Presets:** `1280x720`, `960x540`, `640x360`, plus `Fit` scaling (synced with `project.json`).
+* **Virtual Display & Scaling (`IVirtualDisplayService`):**
+  * Scaling modes (`1:1 None`, `Stretch`, `Fit`, `Integer`) via `GetPresentationMatrix` and inverse `ScreenToVirtual` mouse projection. Automatically uses `TextureFilter.Point` for crisp pixels in `IntegerScale`/`None`, and `TextureFilter.Bilinear` for `FitLetterbox`/`Stretch`.
+  * Pixel snapping modes (`Snap Off`, `Floor`, `Round`) applied to `BeginCamera2D` target/offset and `Display.SnapCoordinates(...)`.
+  * Resolution presets: `480x270`, `640x360`, `960x540`, `1280x720`, `1920x1080`, and `Native` (synced with `project.json`).
+  * Live **Batcher telemetry** (`Draw Calls` and `Quads` per frame) in the Viewport status bar and `Overlay` debug HUD.
 
 ### Layers & Inspector (`SceneLayersPlugin`)
 * Edit `scenes/*.scene.json` documents with **Hierarchy (`ParentId`)**, `ZOrder`, visibility (`V`), lock (`L`), and `Undo`/`Redo` (`Cmd+Z` / `Cmd+Shift+Z`), `Save` (`Cmd+S`).
@@ -165,11 +169,26 @@ dotnet run --project src/Engine.App -- --project /path/to/MyProject
 
 ### 2. Configuring `project.json`
 
+`project.json` supports both top-level `virtualWidth` / `virtualHeight` and optional `display` and `audioBuses` sections (omitted sections preserve backward-compatible defaults):
+
 ```json
 {
   "name": "MyProject",
   "virtualWidth": 1280,
   "virtualHeight": 720,
+  "display": {
+    "virtualWidth": 480,
+    "virtualHeight": 270,
+    "scalingMode": "IntegerScale",
+    "snapping": "Round"
+  },
+  "audioBuses": {
+    "Master": 1.0,
+    "Music": 0.85,
+    "Atmosphere": 0.70,
+    "Effects": 1.0,
+    "Interface": 1.0
+  },
   "nodes": [
     {
       "nodeId": "main_controller",
@@ -209,17 +228,29 @@ dotnet run --project src/Engine.App -- --project /path/to/MyProject
 
 > Note: All `.cs` files under `scripts/` are compiled together into one dynamic assembly so helper classes, generators, and multiple `IExecutableNode` types can reference each other freely. Set `"enabled": false` on a `nodeId` in `project.json` to temporarily disable a node.
 
-### 3. Writing `IExecutableNode` Scripts (Surfaces, Shaders, Camera2D, Blend Modes & `TextureHandle`)
+### 3. Writing `IExecutableNode` Scripts (Core v2 Primitives & Deterministic Reloads)
 
-`IExecutableNode` provides four lifecycle hooks (`OnUnload` has a default empty implementation for backward compatibility):
-* `OnInit(ExecutionContext context)` — acquire `TextureHandle`s, subscribe to `context.EventBus`, initialize state.
-* `OnUpdate(float deltaTime)` — advance simulation and update offscreen surfaces (`BeginSurface` / `EndSurface`).
-* `OnDraw(IGraphicsService graphics)` — render with `BeginCamera2D` / `EndCamera2D`, `BeginBlendMode` / `EndBlendMode`, shaders, and zero-alloc `TextureHandle` draws.
-* `OnUnload()` *(optional)* — called right before hot-reload / unload (`ScriptAssemblyLoadContext.Unload()`) so nodes can unsubscribe events and release offscreen surfaces (`graphics.ReleaseSurface(...)`).
+`IExecutableNode` provides four lifecycle hooks (`OnUnload` has a default empty implementation):
+* `OnInit(ExecutionContext context)` — acquire `TextureHandle`s, allocate surfaces via `context.Compositor.EnsureSurface(...)`, register cleanup via `context.Scope.TrackSurface(...)` & `context.Scope.Subscribe<T>(...)`, and start ambient audio streams.
+* `OnUpdate(float deltaTime)` — advance simulation (`SoA` arrays, logic) and update offscreen surfaces.
+* `OnDraw(IGraphicsService graphics)` — render tens of thousands of quads with zero heap allocations via `context.Batcher`, drive `BeginCamera2D` / `EndCamera2D`, and run multi-pass shaders through `context.Compositor`.
+* `OnUnload()` *(optional)* — called during [`ScriptAssemblyScope.Dispose`](src/Engine.Core/Plugins/ScriptAssemblyScope.cs) right before `AssemblyLoadContext.Unload()` (scoped event subscriptions are revoked automatically and tracked FBOs are released deterministically).
+
+#### `ExecutionContext` Subsystems
+
+| Property | Interface | Capabilities |
+| :--- | :--- | :--- |
+| `Graphics` | [`IGraphicsService`](src/Engine.Core/Abstractions/IGraphicsService.cs) | Primitives, `TextureHandle` (`O(1)`), `Camera2D`, `BlendMode`, `SetShaderSurface`, `SetShaderTexture` |
+| `Batcher` | [`IQuadBatchService`](src/Engine.Core/Abstractions/IQuadBatchService.cs) | Preallocated 16,384-quad VAO/VBO/EBO batcher (`Begin`, `DrawQuad`, `DrawQuadRotated`, `Flush`, `End`) with auto-flush on state switch (`0 B` GC alloc) |
+| `Display` | [`IVirtualDisplayService`](src/Engine.Core/Abstractions/IVirtualDisplayService.cs) | `VirtualResolution`, `ScalingMode`, `Snapping`, `SnapCoordinates`, `ScreenToVirtual`, `GetPresentationMatrix` |
+| `Compositor` | [`ISurfaceCompositor`](src/Engine.Core/Abstractions/ISurfaceCompositor.cs) | Named FBO cache (`EnsureSurface`, `BeginTarget`, `EndTarget`, `ExecutePass(PassDescriptor)`, `PresentToScreen`) |
+| `Audio` | [`IAudioMixerService`](src/Engine.Core/Abstractions/IAudioMixerService.cs) | `AudioBus` channels (`Master`, `Music`, `Atmosphere`, `Effects`, `Interface`), polyphonic `PlayOneShot(..., pitchVariation)`, `PlayStream`/`StopStream`, `CrossfadeMusic` |
+| `Scope` / `Events` | [`IScriptScope`](src/Engine.Core/Abstractions/IScriptScope.cs) / [`IScopedEventBus`](src/Engine.Core/Abstractions/IScriptScope.cs) | `Scope.Subscribe<T>` & `Scope.TrackSurface` auto-cleaned on every hot-reload |
 
 ```csharp
 using System.Numerics;
 using Engine.Core.Abstractions;
+using Engine.Core.Events;
 using Raylib_cs;
 using ExecutionContext = Engine.Core.Abstractions.ExecutionContext;
 
@@ -237,58 +268,76 @@ public sealed class MonitorDemoNode : IExecutableNode
     {
         _ctx = context;
         _tileset = context.Graphics.GetTextureHandle("assets/sprites/tileset.png");
+
+        // Allocate reusable offscreen surfaces and register them for automatic cleanup on hot-reload
+        context.Compositor.EnsureSurface("diffuse", 480, 270);
+        context.Compositor.EnsureSurface("lightmap", 480, 270);
+        context.Scope.TrackSurface("diffuse");
+        context.Scope.TrackSurface("lightmap");
+
+        // Scoped subscription: automatically unsubscribed before AssemblyLoadContext.Unload()
+        context.Scope.Subscribe<ViewportResolutionChangedEvent>(evt =>
+        {
+            context.Compositor.EnsureSurface("diffuse", evt.VirtualWidth, evt.VirtualHeight);
+            context.Compositor.EnsureSurface("lightmap", evt.VirtualWidth, evt.VirtualHeight);
+        });
+
+        context.Audio.PlayStream("rain", "assets/audio/rain.wav", AudioBus.Atmosphere, targetVolume: 0.6f, fadeInSec: 1.5f);
     }
 
     // Callable from Timeline triggerTracks: actionType = "method", target = "monitor_demo.OnCue"
     public void OnCue(string? arg)
     {
         _pulse = 1.0f;
+        _ctx?.Audio.PlayOneShot("assets/audio/chime.wav", AudioBus.Effects, volume: 0.8f, pitchVariation: 0.08f);
     }
 
     public void OnUpdate(float deltaTime)
     {
         _pulse = MathF.Max(0f, _pulse - deltaTime * 2f);
-
-        // Prepare a procedural offscreen surface that any "Surface" layer in scenes/*.scene.json can display!
-        if (_ctx != null)
-        {
-            _ctx.Graphics.BeginSurface("cctv_feed", 320, 180);
-            _ctx.Graphics.Clear(new Color((byte)15, (byte)24, (byte)20, (byte)255));
-            float x = 160f + MathF.Sin(_ctx.CurrentTime * 2f) * 90f;
-            _ctx.Graphics.DrawCircle(new Vector2(x, 90f), 26f + _pulse * 8f, Color.Lime);
-            _ctx.Graphics.EndSurface();
-        }
     }
 
     public void OnDraw(IGraphicsService graphics)
     {
         if (_ctx == null) return;
 
-        // Hardware 2D Camera + O(1) zero-alloc TextureHandle tile drawing
-        graphics.BeginCamera2D(target: new Vector2(128f, 128f), offset: new Vector2(480f, 270f), zoom: 2.0f);
-        if (_tileset.IsValid)
+        // Pass 1: Batched geometry into "diffuse" surface with pixel-snapped Camera2D (0 B alloc)
+        _ctx.Compositor.BeginTarget("diffuse", new Color((byte)14, (byte)16, (byte)22, (byte)255));
+        graphics.BeginCamera2D(target: new Vector2(128.37f, 128.81f), offset: new Vector2(240f, 135f));
+
+        _ctx.Batcher.Begin(_tileset);
+        for (int i = 0; i < 400; i++)
         {
-            graphics.DrawTexture(_tileset, Vector2.Zero, srcRect: new Rectangle(0f, 0f, 16f, 16f), tint: Color.White);
+            var pos = new Vector2((i % 20) * 16f, (i / 20) * 16f);
+            _ctx.Batcher.DrawQuad(pos, new Vector2(16f, 16f), new Rectangle(0f, 0f, 16f, 16f), Color.White);
         }
+        _ctx.Batcher.End();
 
-        // Additive lighting pass via BlendMode
-        graphics.BeginBlendMode(BlendMode.Additive);
-        graphics.DrawCircle(new Vector2(128f, 128f), 48f, new Color((byte)255, (byte)190, (byte)100, (byte)120));
-        graphics.EndBlendMode();
         graphics.EndCamera2D();
+        _ctx.Compositor.EndTarget();
 
-        // Screen-space draw of a surface with a workspace fragment shader
-        graphics.BeginShader("assets/shaders/cctv_scanlines.fs");
-        graphics.SetShaderFloat("assets/shaders/cctv_scanlines.fs", "uTime", _ctx.CurrentTime);
-        graphics.SetShaderFloat("assets/shaders/cctv_scanlines.fs", "uIntensity", 1.0f);
-        graphics.SetShaderVec2("assets/shaders/cctv_scanlines.fs", "uResolution", new Vector2(320f, 180f));
-        graphics.DrawSurface("cctv_feed", new Vector2(180f, 110f), new Vector2(320f, 180f), Color.White, origin: Vector2.Zero);
-        graphics.EndShader();
+        // Pass 2: Lightmap pass + final compositor pass onto main render target
+        _ctx.Compositor.BeginTarget("lightmap", new Color((byte)45, (byte)50, (byte)75, (byte)255));
+        graphics.DrawCircle(new Vector2(240f, 135f), 84f + _pulse * 24f, new Color((byte)255, (byte)210, (byte)150, (byte)255));
+        _ctx.Compositor.EndTarget();
+
+        _ctx.Compositor.ExecutePass(new PassDescriptor
+        {
+            SourceSurface = "diffuse",
+            TargetSurface = null,
+            ShaderPath = "assets/shaders/night_light.fs",
+            BlendMode = BlendMode.Alpha,
+            SetupUniforms = gfx =>
+            {
+                gfx.SetShaderSurface("assets/shaders/night_light.fs", "uLightmap", "lightmap");
+                gfx.SetShaderFloat("assets/shaders/night_light.fs", "uTime", _ctx.CurrentTime);
+            }
+        });
     }
 
     public void OnUnload()
     {
-        _ctx?.Graphics.ReleaseSurface("cctv_feed");
+        _ctx?.Audio.StopStream("rain", fadeOutSec: 0.2f);
     }
 }
 ```
@@ -322,9 +371,10 @@ void main()
 Drop `.fs` files into `assets/shaders/` and select them directly inside **Inspector -> Shader (.fs)** or bind them via `IGraphicsService.BeginShader(...)`.
 
 ### 5. Performance Guidance for Large Simulations
-If you simulate thousands of autonomous entities (e.g. 10,000+ agents in a single `IExecutableNode`):
-* Store state in **flat arrays of primitives / blittable `struct`s** (Structure of Arrays) with `int` IDs instead of managed `class` references to eliminate GC pauses.
-* Use **Round-Robin time-slicing** for slow AI/economic layers and a pre-allocated transaction ring buffer instead of calling `EventBus.Publish<T>()` for every micro-interaction.
+If you simulate tens of thousands of autonomous elements or particles in a single `IExecutableNode`:
+* Store state in **flat arrays of primitives / blittable `struct`s** (Structure of Arrays) with `int` IDs instead of managed `class` references to achieve **0 B per-frame GC allocations**.
+* Submit batched geometry through `context.Batcher` (`IQuadBatchService`) — up to **16,384 quads per draw call** (tested at **65,000 quads @ ~370 FPS / 0 B GC alloc** on Apple M4).
+* Use **Round-Robin time-slicing** for slow AI/economic layers and a pre-allocated ring buffer instead of publishing every micro-interaction over `EventBus`.
 
 ---
 
@@ -339,14 +389,17 @@ Every plugin receives a [`PluginContext`](src/Engine.Core/Plugins/PluginContext.
 | Property | Interface | Purpose |
 | :--- | :--- | :--- |
 | `Graphics` | [`IGraphicsService`](src/Engine.Core/Abstractions/IGraphicsService.cs) | 2D draw calls, `TextureHandle` O(1) cache, `Camera2D`, `BlendMode`, surfaces, shaders |
-| `Audio` | [`IAudioService`](src/Engine.Core/Abstractions/IAudioService.cs) | Sound playback & cache invalidation |
+| `Batcher` | [`IQuadBatchService`](src/Engine.Core/Abstractions/IQuadBatchService.cs) | Preallocated GPU quad batcher (16,384 quads per flush, auto-flush on state switch) |
+| `Display` | [`IVirtualDisplayService`](src/Engine.Core/Abstractions/IVirtualDisplayService.cs) | Virtual resolution, scaling modes, pixel snapping, `ScreenToVirtual` |
+| `Compositor` | [`ISurfaceCompositor`](src/Engine.Core/Abstractions/ISurfaceCompositor.cs) | Multi-pass offscreen FBO compositor (`BeginTarget`, `ExecutePass`, `PresentToScreen`) |
+| `Audio` | [`IAudioMixerService`](src/Engine.Core/Abstractions/IAudioMixerService.cs) | Bus routing (`AudioBus`), polyphonic `PlayOneShot`, `PlayStream`/`CrossfadeMusic`, cache invalidation |
 | `Input` | [`IInputService`](src/Engine.Core/Abstractions/IInputService.cs) | Keyboard, mouse, virtual viewport mouse coordinates |
 | `Workspace` | [`IWorkspaceService`](src/Engine.Core/Abstractions/IWorkspaceService.cs) | Project root, file enumeration, relative/absolute path conversion |
 | `EventBus` | [`IEventBus`](src/Engine.Core/Abstractions/IEventBus.cs) | Typed event communication between plugins and core |
 | `Settings` | [`ISettingsService`](src/Engine.Core/Abstractions/ISettingsService.cs) | Persistent JSON user preferences |
 | `Menu` | [`IMenuService`](src/Engine.Core/Abstractions/IMenuService.cs) | Register macOS top menu / fallback menu commands & shortcuts |
 | `Plugins` | [`IPluginManager`](src/Engine.Core/Abstractions/IPluginManager.cs) | Query/toggle plugin enabled state and panel window visibility |
-| `Runtime` | [`ExecutionContext`](src/Engine.Core/Abstractions/ExecutionContext.cs) | Shared runtime properties & active simulation state |
+| `Runtime` | [`ExecutionContext`](src/Engine.Core/Abstractions/ExecutionContext.cs) | Shared runtime properties & Core v2 execution services |
 
 ### 2. Example Plugin Implementation
 

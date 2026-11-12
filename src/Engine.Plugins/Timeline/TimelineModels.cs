@@ -141,6 +141,21 @@ public sealed class TimelineConfig
     public List<TriggerTrack> TriggerTracks { get; set; } = new();
 }
 
+public sealed class DisplayConfig
+{
+    [JsonPropertyName("virtualWidth")]
+    public int? VirtualWidth { get; set; }
+
+    [JsonPropertyName("virtualHeight")]
+    public int? VirtualHeight { get; set; }
+
+    [JsonPropertyName("scalingMode")]
+    public string? ScalingMode { get; set; }
+
+    [JsonPropertyName("snapping")]
+    public string? Snapping { get; set; }
+}
+
 public sealed class ProjectNodeConfig
 {
     [JsonPropertyName("nodeId")]
@@ -174,6 +189,14 @@ public sealed class ProjectDocument
 
     [JsonPropertyName("virtualHeight")]
     public int VirtualHeight { get; set; } = 540;
+
+    [JsonPropertyName("display")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DisplayConfig? Display { get; set; }
+
+    [JsonPropertyName("audioBuses")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Dictionary<string, float>? AudioBuses { get; set; }
 
     [JsonPropertyName("nodes")]
     public List<ProjectNodeConfig> Nodes { get; set; } = new();

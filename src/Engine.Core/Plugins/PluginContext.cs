@@ -13,25 +13,34 @@ public sealed class PluginContext
         IInputService input,
         ISettingsService? settings = null,
         IMenuService? menu = null,
-        ExecutionContext? runtime = null)
+        ExecutionContext? runtime = null,
+        IQuadBatchService? batcher = null,
+        IVirtualDisplayService? display = null,
+        ISurfaceCompositor? compositor = null)
     {
         Graphics = graphics;
-        Audio = audio;
         EventBus = eventBus;
         Workspace = workspace;
         Input = input;
         Settings = settings ?? new JsonSettingsService(eventBus);
         Menu = menu ?? new MenuRegistry();
-        Runtime = runtime ?? new ExecutionContext(graphics, audio, eventBus, workspace, input);
+        Runtime = runtime ?? new ExecutionContext(graphics, audio, eventBus, workspace, input, batcher, display, compositor);
+        Audio = Runtime.Audio;
+        Batcher = batcher ?? Runtime.Batcher;
+        Display = display ?? Runtime.Display;
+        Compositor = compositor ?? Runtime.Compositor;
     }
 
     public IGraphicsService Graphics { get; }
-    public IAudioService Audio { get; }
+    public IAudioMixerService Audio { get; }
     public IEventBus EventBus { get; }
     public IWorkspaceService Workspace { get; }
     public IInputService Input { get; }
     public ISettingsService Settings { get; }
     public IMenuService Menu { get; }
+    public IQuadBatchService Batcher { get; }
+    public IVirtualDisplayService Display { get; }
+    public ISurfaceCompositor Compositor { get; }
     public ExecutionContext Runtime { get; }
     public IPluginManager? Plugins { get; internal set; }
 }

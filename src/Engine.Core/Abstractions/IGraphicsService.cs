@@ -73,6 +73,8 @@ public interface IGraphicsService
     void SetShaderFloat(string fragmentShaderPath, string uniformName, float value);
     void SetShaderVec2(string fragmentShaderPath, string uniformName, Vector2 value);
     void SetShaderColor(string fragmentShaderPath, string uniformName, Color value);
+    void SetShaderSurface(string fragmentShaderPath, string uniformName, string surfaceName) { }
+    void SetShaderTexture(string fragmentShaderPath, string uniformName, TextureHandle texture) { }
     void InvalidateShader(string path);
 
     void InvalidateTexture(string path);

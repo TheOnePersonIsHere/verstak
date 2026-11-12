@@ -2,6 +2,7 @@ using System.Numerics;
 using System.Text.Json;
 using Engine.Core.Abstractions;
 using Engine.Core.Events;
+using Engine.Core.Graphics;
 using Engine.Core.Plugins;
 using Engine.Plugins.Settings;
 using Engine.Plugins.Workspace;
@@ -23,11 +24,19 @@ public sealed class ViewportPlugin : IEnginePlugin
         ScaleY = 5
     }
 
+    private static readonly string[] ScalingModeLabels = ["1:1 None", "Stretch", "Fit", "Integer"];
+    private static readonly ScalingMode[] ScalingModeValues = [ScalingMode.None, ScalingMode.Stretch, ScalingMode.FitLetterbox, ScalingMode.IntegerScale];
+
+    private static readonly string[] SnappingLabels = ["Snap Off", "Floor", "Round"];
+    private static readonly PixelSnapping[] SnappingValues = [PixelSnapping.Disabled, PixelSnapping.Floor, PixelSnapping.Round];
+
     private PluginContext? _context;
     private int _virtualWidth = 1280;
     private int _virtualHeight = 720;
     private int _nativeWidth = 1280;
     private int _nativeHeight = 720;
+    private ScalingMode _nativeScalingMode = ScalingMode.FitLetterbox;
+    private PixelSnapping _nativeSnapping = PixelSnapping.Disabled;
     private bool _fitToWindow = true;
     private bool _showGrid = true;
     private bool _showOverlay;
@@ -35,6 +44,7 @@ public sealed class ViewportPlugin : IEnginePlugin
     private uint _configuredRenderTargetTexId;
     private int _configuredRenderTargetWidth;
     private int _configuredRenderTargetHeight;
+    private TextureFilter _configuredFilter = (TextureFilter)(-1);
     private string? _lastProjectRootLoaded;
 
     private float _timelineCurrentTime;
@@ -72,12 +82,15 @@ public sealed class ViewportPlugin : IEnginePlugin
         _fitToWindow = context.Settings.GetBool("viewport.fit", true);
         _showGrid = context.Settings.GetBool("viewport.showGrid", true);
         _showOverlay = context.Settings.GetBool("viewport.showOverlay", false);
+        _context.Display.ScalingMode = _fitToWindow ? ScalingMode.FitLetterbox : ScalingMode.None;
+        _context.Display.Snapping = PixelSnapping.Disabled;
+
         _timelineCurrentTime = context.Runtime.CurrentTime;
         _timelineMaxDuration = context.Runtime.MaxDuration > 0f ? context.Runtime.MaxDuration : 4.0f;
 
         LoadResolutionFromProjectJson();
         _context.Graphics.EnsureRenderTexture(_virtualWidth, _virtualHeight);
-        EnsureRenderTexturePointFilter();
+        EnsureRenderTextureFilter();
         _context.EventBus.Publish(new ViewportResolutionChangedEvent(_virtualWidth, _virtualHeight));
 
         _context.EventBus.Subscribe<AssetModifiedEvent>(OnAssetModified);
@@ -91,8 +104,22 @@ public sealed class ViewportPlugin : IEnginePlugin
 
     public void OnUpdate(float deltaTime)
     {
-        _context?.Graphics.EnsureRenderTexture(_virtualWidth, _virtualHeight);
-        EnsureRenderTexturePointFilter();
+        if (_context == null)
+        {
+            return;
+        }
+
+        // Sync if an active script or ExecutionPlugin modified Display.VirtualResolution programmatically.
+        int dispW = Math.Max(64, (int)MathF.Round(_context.Display.VirtualResolution.X));
+        int dispH = Math.Max(64, (int)MathF.Round(_context.Display.VirtualResolution.Y));
+        if (dispW != _virtualWidth || dispH != _virtualHeight)
+        {
+            _virtualWidth = dispW;
+            _virtualHeight = dispH;
+        }
+
+        _context.Graphics.EnsureRenderTexture(_virtualWidth, _virtualHeight);
+        EnsureRenderTextureFilter();
     }
 
     public void OnRenderUI()
@@ -133,7 +160,7 @@ public sealed class ViewportPlugin : IEnginePlugin
         ImGui.Separator();
 
         RenderTexture2D rt = _context.Graphics.GetRenderTexture();
-        EnsureRenderTexturePointFilter(rt);
+        EnsureRenderTextureFilter(rt);
 
         Vector2 fullAvail = ImGui.GetContentRegionAvail();
         float statusBarHeight = ImGui.GetTextLineHeight() + ImGui.GetStyle().ItemSpacing.Y * 2f + 4f;
@@ -167,17 +194,18 @@ public sealed class ViewportPlugin : IEnginePlugin
             uint backdropColor = ImGui.ColorConvertFloat4ToU32(theme.CanvasBackdrop);
             drawList.AddRectFilled(regionScreenPos, regionScreenPos + avail, backdropColor);
 
-            if (_fitToWindow)
-            {
-                rlImGui.ImageRenderTextureFit(rt, center: true);
-            }
-            else
-            {
-                float offsetX = MathF.Max(0f, (avail.X - rt.Texture.Width) * 0.5f);
-                float offsetY = MathF.Max(0f, (avail.Y - rt.Texture.Height) * 0.5f);
-                ImGui.SetCursorPos(ImGui.GetCursorPos() + new Vector2(offsetX, offsetY));
-                rlImGui.ImageRenderTexture(rt);
-            }
+            (_context.Display as VirtualDisplayService)?.SetViewportBounds(regionScreenPos, avail);
+            Matrix4x4 presMatrix = _context.Display.GetPresentationMatrix(avail);
+            Vector2 offset = new(presMatrix.M41, presMatrix.M42);
+            int destW = Math.Max(1, (int)MathF.Round(presMatrix.M11 * rt.Texture.Width));
+            int destH = Math.Max(1, (int)MathF.Round(presMatrix.M22 * rt.Texture.Height));
+
+            ImGui.SetCursorScreenPos(regionScreenPos + offset);
+            rlImGui.ImageRect(
+                rt.Texture,
+                destW,
+                destH,
+                new Rectangle(0f, 0f, rt.Texture.Width, -rt.Texture.Height));
 
             _imageRectMin = ImGui.GetItemRectMin();
             _imageRectMax = ImGui.GetItemRectMax();
@@ -258,6 +286,17 @@ public sealed class ViewportPlugin : IEnginePlugin
             return false;
         }
 
+        if (_context != null)
+        {
+            Vector2 mapped = _context.Display.ScreenToVirtual(imguiScreenPos);
+            bool insideX = mapped.X >= 0f && mapped.X <= _virtualWidth;
+            bool insideY = mapped.Y >= 0f && mapped.Y <= _virtualHeight;
+            virtualPos = new Vector2(
+                Math.Clamp(mapped.X, 0f, _virtualWidth),
+                Math.Clamp(mapped.Y, 0f, _virtualHeight));
+            return insideX && insideY;
+        }
+
         float normX = (imguiScreenPos.X - _imageRectMin.X) / drawnWidth;
         float normY = (imguiScreenPos.Y - _imageRectMin.Y) / drawnHeight;
 
@@ -327,6 +366,11 @@ public sealed class ViewportPlugin : IEnginePlugin
 
     private void RenderToolbar()
     {
+        if (_context == null)
+        {
+            return;
+        }
+
         ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(7f, 4f));
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(5f, 4f));
 
@@ -361,26 +405,45 @@ public sealed class ViewportPlugin : IEnginePlugin
         ImGui.SameLine(0f, 10f);
         if (ImGui.Checkbox("Grid", ref _showGrid))
         {
-            _context?.Settings.SetBool("viewport.showGrid", _showGrid);
-        }
-
-        ImGui.SameLine(0f, 8f);
-        if (ImGui.Checkbox("Fit", ref _fitToWindow))
-        {
-            _context?.Settings.SetBool("viewport.fit", _fitToWindow);
+            _context.Settings.SetBool("viewport.showGrid", _showGrid);
         }
 
         ImGui.SameLine(0f, 8f);
         if (ImGui.Checkbox("Overlay", ref _showOverlay))
         {
-            _context?.Settings.SetBool("viewport.showOverlay", _showOverlay);
+            _context.Settings.SetBool("viewport.showOverlay", _showOverlay);
         }
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Toggle ImGui debug overlay over viewport");
+
+        ImGui.SameLine(0f, 10f);
+        int scaleIdx = Array.IndexOf(ScalingModeValues, _context.Display.ScalingMode);
+        if (scaleIdx < 0) scaleIdx = 2;
+        ImGui.SetNextItemWidth(86f);
+        if (ImGui.Combo("##DisplayScalingMode", ref scaleIdx, ScalingModeLabels, ScalingModeLabels.Length))
+        {
+            _context.Display.ScalingMode = ScalingModeValues[scaleIdx];
+            _fitToWindow = _context.Display.ScalingMode != ScalingMode.None;
+            _context.Settings.SetBool("viewport.fit", _fitToWindow);
+            EnsureRenderTextureFilter();
+        }
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Virtual display scaling mode (Integer/None -> Point, Fit/Stretch -> Bilinear)");
+
+        ImGui.SameLine(0f, 5f);
+        int snapIdx = Array.IndexOf(SnappingValues, _context.Display.Snapping);
+        if (snapIdx < 0) snapIdx = 0;
+        ImGui.SetNextItemWidth(84f);
+        if (ImGui.Combo("##DisplayPixelSnapping", ref snapIdx, SnappingLabels, SnappingLabels.Length))
+        {
+            _context.Display.Snapping = SnappingValues[snapIdx];
+        }
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Pixel snapping mode for Camera2D & SnapCoordinates");
 
         // Second compact row: resolution presets
         ImGui.AlignTextToFramePadding();
         ImGui.TextDisabled("Buffer:");
         ImGui.SameLine(0f, 6f);
+        RenderPresetButton("480x270", 480, 270, "Pixel Art 16:9 (480x270)");
+        ImGui.SameLine(0f, 4f);
         RenderPresetButton("640x360", 640, 360, "Retro Pixel Art (640x360)");
         ImGui.SameLine(0f, 4f);
         RenderPresetButton("960x540", 960, 540, "qHD (960x540)");
@@ -398,6 +461,11 @@ public sealed class ViewportPlugin : IEnginePlugin
 
     private void RenderStatusBar()
     {
+        if (_context == null)
+        {
+            return;
+        }
+
         string activeLayerInfo = _selection.HasSelection
             ? (!string.IsNullOrWhiteSpace(_selection.SourceLabel)
                 ? $"{_selection.SourceLabel} ({_selection.BaseSize.X:F0}x{_selection.BaseSize.Y:F0})"
@@ -408,10 +476,14 @@ public sealed class ViewportPlugin : IEnginePlugin
             ? $"({_lastVirtualMouse.X:F0}, {_lastVirtualMouse.Y:F0})"
             : "(-, -)";
 
+        int drawCalls = (_context.Batcher as IQuadBatchStats)?.LastFrameDrawCalls ?? 0;
+        int quads = (_context.Batcher as IQuadBatchStats)?.LastFrameQuads ?? 0;
+
         string statusLine =
-            $"{_virtualWidth}x{_virtualHeight}  |  " +
+            $"{_virtualWidth}x{_virtualHeight} [{_context.Display.ScalingMode}/{_context.Display.Snapping}]  |  " +
+            $"Draw Calls: {drawCalls} ({quads} quads)  |  " +
             $"Time: {_timelineCurrentTime:F2}s / {_timelineMaxDuration:F2}s  |  " +
-            $"Active Layer: {activeLayerInfo}  |  " +
+            $"Layer: {activeLayerInfo}  |  " +
             $"Cursor: {cursorInfo}";
 
         ImGui.TextDisabled(statusLine.Replace("%", "%%", StringComparison.Ordinal));
@@ -419,19 +491,30 @@ public sealed class ViewportPlugin : IEnginePlugin
 
     private void DrawImGuiDebugOverlay(ImDrawListPtr drawList)
     {
+        if (_context == null)
+        {
+            return;
+        }
+
         string activeInfo = _selection.HasSelection
             ? (!string.IsNullOrWhiteSpace(_selection.SourceLabel)
                 ? $"{_selection.SourceLabel} ({_selection.BaseSize.X:F0}x{_selection.BaseSize.Y:F0})"
                 : $"{_selection.ItemName} ({_selection.BaseSize.X:F0}x{_selection.BaseSize.Y:F0})")
             : "None";
 
-        string line1 = $"t = {_timelineCurrentTime:F2}s / {_timelineMaxDuration:F2}s  |  {_virtualWidth}x{_virtualHeight} (Point)";
-        string line2 = $"Layer: {activeInfo}  |  Tool: {_mode} / {_tool}";
+        int drawCalls = (_context.Batcher as IQuadBatchStats)?.LastFrameDrawCalls ?? 0;
+        int quads = (_context.Batcher as IQuadBatchStats)?.LastFrameQuads ?? 0;
+        string filterName = ResolveDesiredTextureFilter().ToString();
+
+        string line1 = $"t = {_timelineCurrentTime:F2}s / {_timelineMaxDuration:F2}s  |  {_virtualWidth}x{_virtualHeight} ({filterName}, {_context.Display.ScalingMode})";
+        string line2 = $"Batcher DrawCalls: {drawCalls}  |  Quads: {quads}  |  Snap: {_context.Display.Snapping}";
+        string line3 = $"Layer: {activeInfo}  |  Tool: {_mode} / {_tool}";
 
         Vector2 size1 = ImGui.CalcTextSize(line1);
         Vector2 size2 = ImGui.CalcTextSize(line2);
-        float boxW = MathF.Max(size1.X, size2.X) + 16f;
-        float boxH = size1.Y + size2.Y + 14f;
+        Vector2 size3 = ImGui.CalcTextSize(line3);
+        float boxW = MathF.Max(size1.X, MathF.Max(size2.X, size3.X)) + 16f;
+        float boxH = size1.Y + size2.Y + size3.Y + 18f;
 
         Vector2 origin = _imageRectMin + new Vector2(10f, 10f);
         WorkbenchThemePalette theme = WorkbenchTheme.Current;
@@ -445,6 +528,7 @@ public sealed class ViewportPlugin : IEnginePlugin
         drawList.AddRect(origin, origin + new Vector2(boxW, boxH), borderColor, 4f, ImDrawFlags.None, 1f);
         drawList.AddText(origin + new Vector2(8f, 5f), primaryText, line1);
         drawList.AddText(origin + new Vector2(8f, 8f + size1.Y), secondaryText, line2);
+        drawList.AddText(origin + new Vector2(8f, 11f + size1.Y + size2.Y), secondaryText, line3);
         drawList.PopClipRect();
     }
 
@@ -830,12 +914,10 @@ public sealed class ViewportPlugin : IEnginePlugin
 
         if (!_selection.Locked)
         {
-            // Top rotation stem & handle
             drawList.AddLine(topCenterScreen, rotateHandleScreen, outlineColor, 1.5f);
             drawList.AddCircleFilled(rotateHandleScreen, 5f, fillHandle);
             drawList.AddCircle(rotateHandleScreen, 5f, rotateColor, 16, 1.6f);
 
-            // 4 corner scale handles
             for (int i = 0; i < 4; i++)
             {
                 Vector2 c = corners[i];
@@ -865,7 +947,6 @@ public sealed class ViewportPlugin : IEnginePlugin
             }
         }
 
-        // Pivot reticle
         drawList.AddCircleFilled(pivotScreen, 3.5f, outlineColor);
         drawList.AddCircle(pivotScreen, 5.5f, outlineColor, 12, 1.2f);
 
@@ -952,6 +1033,13 @@ public sealed class ViewportPlugin : IEnginePlugin
     public void ApplyNativeResolutionPreset()
     {
         LoadResolutionFromProjectJson();
+        if (_context != null)
+        {
+            _context.Display.ScalingMode = _nativeScalingMode;
+            _context.Display.Snapping = _nativeSnapping;
+            _fitToWindow = _nativeScalingMode != ScalingMode.None;
+        }
+
         SetVirtualResolution(_nativeWidth, _nativeHeight);
     }
 
@@ -962,46 +1050,67 @@ public sealed class ViewportPlugin : IEnginePlugin
 
         if (_virtualWidth == clampedW && _virtualHeight == clampedH)
         {
-            _context?.Graphics.EnsureRenderTexture(_virtualWidth, _virtualHeight);
-            EnsureRenderTexturePointFilter();
+            if (_context != null)
+            {
+                _context.Display.VirtualResolution = new Vector2(_virtualWidth, _virtualHeight);
+                _context.Graphics.EnsureRenderTexture(_virtualWidth, _virtualHeight);
+            }
+
+            EnsureRenderTextureFilter();
             return;
         }
 
         _virtualWidth = clampedW;
         _virtualHeight = clampedH;
-        _context?.Graphics.EnsureRenderTexture(_virtualWidth, _virtualHeight);
-        EnsureRenderTexturePointFilter();
-        _context?.EventBus.Publish(new ViewportResolutionChangedEvent(_virtualWidth, _virtualHeight));
+        if (_context != null)
+        {
+            _context.Display.VirtualResolution = new Vector2(_virtualWidth, _virtualHeight);
+            _context.Graphics.EnsureRenderTexture(_virtualWidth, _virtualHeight);
+            _context.EventBus.Publish(new ViewportResolutionChangedEvent(_virtualWidth, _virtualHeight));
+        }
+
+        EnsureRenderTextureFilter();
     }
 
-    private void EnsureRenderTexturePointFilter()
+    private TextureFilter ResolveDesiredTextureFilter()
+    {
+        ScalingMode mode = _context?.Display.ScalingMode ?? (_fitToWindow ? ScalingMode.FitLetterbox : ScalingMode.None);
+        return mode is ScalingMode.IntegerScale or ScalingMode.None
+            ? TextureFilter.Point
+            : TextureFilter.Bilinear;
+    }
+
+    private void EnsureRenderTextureFilter()
     {
         if (_context == null || !Raylib.IsWindowReady())
         {
             return;
         }
 
-        EnsureRenderTexturePointFilter(_context.Graphics.GetRenderTexture());
+        EnsureRenderTextureFilter(_context.Graphics.GetRenderTexture());
     }
 
-    private void EnsureRenderTexturePointFilter(RenderTexture2D rt)
+    private void EnsureRenderTextureFilter(RenderTexture2D rt)
     {
         if (!Raylib.IsWindowReady() || !Raylib.IsTextureValid(rt.Texture))
         {
             return;
         }
 
+        TextureFilter desired = ResolveDesiredTextureFilter();
         if (_configuredRenderTargetTexId == rt.Texture.Id &&
             _configuredRenderTargetWidth == rt.Texture.Width &&
-            _configuredRenderTargetHeight == rt.Texture.Height)
+            _configuredRenderTargetHeight == rt.Texture.Height &&
+            _configuredFilter == desired)
         {
             return;
         }
 
-        Raylib.SetTextureFilter(rt.Texture, TextureFilter.Point);
+        Raylib.SetTextureFilter(rt.Texture, desired);
         _configuredRenderTargetTexId = rt.Texture.Id;
         _configuredRenderTargetWidth = rt.Texture.Width;
         _configuredRenderTargetHeight = rt.Texture.Height;
+        _configuredFilter = desired;
     }
 
     private void OnSelectionStateChanged(ViewportSelectionStateEvent evt)
@@ -1029,6 +1138,16 @@ public sealed class ViewportPlugin : IEnginePlugin
         else if (string.Equals(evt.Key, "viewport.fit", StringComparison.Ordinal))
         {
             _fitToWindow = _context.Settings.GetBool("viewport.fit", true);
+            if (_fitToWindow && _context.Display.ScalingMode == ScalingMode.None)
+            {
+                _context.Display.ScalingMode = ScalingMode.FitLetterbox;
+            }
+            else if (!_fitToWindow && _context.Display.ScalingMode != ScalingMode.None)
+            {
+                _context.Display.ScalingMode = ScalingMode.None;
+            }
+
+            EnsureRenderTextureFilter();
         }
         else if (string.Equals(evt.Key, "viewport.showOverlay", StringComparison.Ordinal))
         {
@@ -1074,6 +1193,8 @@ public sealed class ViewportPlugin : IEnginePlugin
         {
             _nativeWidth = 1280;
             _nativeHeight = 720;
+            _nativeScalingMode = ScalingMode.FitLetterbox;
+            _nativeSnapping = PixelSnapping.Disabled;
             return;
         }
 
@@ -1085,12 +1206,63 @@ public sealed class ViewportPlugin : IEnginePlugin
 
             int w = root.TryGetProperty("virtualWidth", out JsonElement wEl) && wEl.TryGetInt32(out int parsedW) ? parsedW : 1280;
             int h = root.TryGetProperty("virtualHeight", out JsonElement hEl) && hEl.TryGetInt32(out int parsedH) ? parsedH : 720;
+            ScalingMode scaling = ScalingMode.FitLetterbox;
+            PixelSnapping snapping = PixelSnapping.Disabled;
+            bool hasDisplaySection = false;
+
+            if (root.TryGetProperty("display", out JsonElement displayEl) && displayEl.ValueKind == JsonValueKind.Object)
+            {
+                hasDisplaySection = true;
+                if (displayEl.TryGetProperty("virtualWidth", out JsonElement dw) && dw.TryGetInt32(out int parsedDw) && parsedDw >= 64)
+                {
+                    w = parsedDw;
+                }
+
+                if (displayEl.TryGetProperty("virtualHeight", out JsonElement dh) && dh.TryGetInt32(out int parsedDh) && parsedDh >= 64)
+                {
+                    h = parsedDh;
+                }
+
+                if (displayEl.TryGetProperty("scalingMode", out JsonElement smEl) &&
+                    smEl.ValueKind == JsonValueKind.String &&
+                    Enum.TryParse(smEl.GetString(), ignoreCase: true, out ScalingMode parsedScale))
+                {
+                    scaling = parsedScale;
+                }
+
+                if (displayEl.TryGetProperty("snapping", out JsonElement snapEl) &&
+                    snapEl.ValueKind == JsonValueKind.String &&
+                    Enum.TryParse(snapEl.GetString(), ignoreCase: true, out PixelSnapping parsedSnap))
+                {
+                    snapping = parsedSnap;
+                }
+            }
+
+            if (hasDisplaySection)
+            {
+                _nativeScalingMode = scaling;
+                _nativeSnapping = snapping;
+                _context.Display.ScalingMode = scaling;
+                _context.Display.Snapping = snapping;
+                _fitToWindow = scaling != ScalingMode.None;
+            }
+            else
+            {
+                _nativeScalingMode = _fitToWindow ? ScalingMode.FitLetterbox : ScalingMode.None;
+                _nativeSnapping = PixelSnapping.Disabled;
+                _context.Display.ScalingMode = _nativeScalingMode;
+                _context.Display.Snapping = _nativeSnapping;
+            }
 
             if (w >= 64 && h >= 64)
             {
                 _nativeWidth = w;
                 _nativeHeight = h;
                 SetVirtualResolution(w, h);
+            }
+            else
+            {
+                EnsureRenderTextureFilter();
             }
         }
         catch (Exception)
